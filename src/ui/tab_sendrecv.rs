@@ -25,24 +25,33 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
 
-            // 实时过滤栏
+            // 实时过滤栏:胶囊搜索框填满左侧,右侧固定摆放清除按钮与计数
             let filtering = !app.recv_filter.trim().is_empty();
             ui.horizontal(|ui| {
-                ui.label(RichText::new("筛选").color(TEXT_DIM));
-                let field_w = (ui.available_width() - 78.0).max(120.0);
-                let resp = ui.add(
-                    egui::TextEdit::singleline(&mut app.recv_filter)
-                        .desired_width(field_w)
-                        .hint_text("端口/RX/TX/HEX/文本,空格分隔,多个条件任一命中"),
-                );
+                // × 按钮 22 + 计数 ~64 + 两个间距,提前预留,避免换行/溢出
+                let reserved = if filtering { 22.0 + 64.0 + 16.0 } else { 0.0 };
+                let field_w = (ui.available_width() - reserved).max(120.0);
+                let resp = ui
+                    .allocate_ui(egui::vec2(field_w, 26.0), |ui| {
+                        crate::ui::search_field(
+                            ui,
+                            &mut app.recv_filter,
+                            "端口/RX/TX/HEX/文本,空格分隔,多个条件任一命中",
+                        )
+                    })
+                    .inner;
                 if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     app.recv_filter.clear();
                 }
-                if filtering && ui.small_button("×").on_hover_text("清除过滤").clicked() {
-                    app.recv_filter.clear();
-                }
                 if filtering {
-                    let shown = app.lines.iter().filter(|l| l.matches_filter(&app.recv_filter)).count();
+                    if ui.small_button("×").on_hover_text("清除过滤").clicked() {
+                        app.recv_filter.clear();
+                    }
+                    let shown = app
+                        .lines
+                        .iter()
+                        .filter(|l| l.matches_filter(&app.recv_filter))
+                        .count();
                     ui.label(
                         RichText::new(format!("{shown}/{}", app.lines.len()))
                             .color(TEXT_DIM)
@@ -100,16 +109,25 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
                 ui.selectable_value(&mut app.send_format, DataFormat::Hex, "HEX");
                 ui.separator();
                 ui.checkbox(&mut app.append_crlf, "追加 CRLF");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let connected = app.serial_handle.is_some();
-                    if ui
-                        .add_enabled(connected, egui::Button::new("发 送").fill(ACCENT).min_size(egui::vec2(96.0, 24.0)))
-                        .on_disabled_hover_text("请先在左侧打开串口")
-                        .clicked()
-                    {
-                        do_send(app);
-                    }
-                });
+                // 有界的 RTL 区域承载发送按钮:宽度占满剩余空间,按钮在其中右对齐
+                let connected = app.serial_handle.is_some();
+                let row_w = ui.available_width();
+                ui.allocate_ui_with_layout(
+                    egui::vec2(row_w, 24.0),
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        let resp = crate::ui::send_button(ui, connected).on_hover_text(
+                            if connected {
+                                "发送(Ctrl+Enter)"
+                            } else {
+                                "请先在左侧打开串口"
+                            },
+                        );
+                        if resp.clicked() {
+                            do_send(app);
+                        }
+                    },
+                );
             });
             ui.add_space(2.0);
             let ctrl_enter = ui.ctx().input(|i| {
@@ -144,6 +162,8 @@ fn do_send(app: &mut SerialApp) {
         expanded: false,
     };
     match tmp.decode() {
+        // HEX 空白且未勾 CRLF 时解码为 0 字节:拦截,不入队、不记 TX
+        Ok(data) if data.is_empty() => app.set_error("发送内容为空"),
         Ok(data) => {
             if let Err(e) = app.send_bytes(&data) {
                 app.set_error(format!("发送失败: {e}"));

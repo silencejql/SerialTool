@@ -48,6 +48,9 @@ pub const BORDER: Color32 = Color32::from_rgb(0xD6, 0xE2, 0xF2);
 pub const TEXT: Color32 = Color32::from_rgb(0x16, 0x26, 0x3E);
 pub const TEXT_DIM: Color32 = Color32::from_rgb(0x5F, 0x72, 0x90);
 pub const ACCENT: Color32 = Color32::from_rgb(0x2B, 0x7F, 0xFF);
+/// 强调色按钮的悬停/按下(主按钮无浅色 hover)
+pub const ACCENT_HOVER: Color32 = Color32::from_rgb(0x1F, 0x6B, 0xE0);
+pub const ACCENT_ACTIVE: Color32 = Color32::from_rgb(0x1A, 0x59, 0xBF);
 pub const RX_C: Color32 = Color32::from_rgb(0x00, 0xA3, 0x7E);
 pub const TX_C: Color32 = Color32::from_rgb(0xD9, 0x74, 0x0A);
 pub const ERR_C: Color32 = Color32::from_rgb(0xE5, 0x48, 0x4D);

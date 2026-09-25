@@ -275,7 +275,8 @@ impl SerialApp {
                         data,
                     ));
                 }
-                RxEvent::Error(e) => self.set_error(format!("串口错误: {e}")),
+                // 错误文案已在读/写线程处带上"接收失败/发送失败"上下文,直接显示
+                RxEvent::Error(e) => self.set_error(e),
                 RxEvent::Closed => {
                     self.serial_handle = None;
                     self.set_status("串口已关闭");

@@ -6,6 +6,8 @@
 //!   serial_tool loop   <COMn> [baud] [间隔ms] [持续ms]  周期收发(充当被注入目标)
 //!   serial_tool send   <COMn> [baud] <text...>
 //!   serial_tool recv   <COMn> [baud] [毫秒]
+//!
+//! 诊断环境变量:SERIALTOOL_FRAME=newline 时 CLI 收发按换行符组帧(默认空闲间隔)
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
@@ -80,6 +82,18 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|cc| Ok(Box::new(app::SerialApp::new(cc)))),
     )
+}
+
+/// CLI 诊断用:环境变量 SERIALTOOL_FRAME=newline 切换换行组帧(argv 形式保持不变)
+fn cli_frame_mode() -> serial::port::FrameMode {
+    match std::env::var("SERIALTOOL_FRAME")
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "newline" | "nl" | "lf" | "1" => serial::port::FrameMode::Newline,
+        _ => serial::port::FrameMode::Idle,
+    }
 }
 
 fn hex_ascii(data: &[u8]) -> (String, String) {
@@ -170,12 +184,16 @@ fn run_cli_loop(port: &str, baud: u32, interval_ms: u64, duration_ms: u64) {
     let cfg = SerialConfig {
         port_name: port.into(),
         baud_rate: baud,
+        frame_mode: cli_frame_mode(),
         ..Default::default()
     };
     let (tx, rx) = mpsc::channel::<RxEvent>();
     let handle = match open(&cfg, tx) {
         Ok(h) => {
-            println!("[cli] loop {port} @ {baud}, interval {interval_ms}ms, {duration_ms}ms");
+            println!(
+                "[cli] loop {port} @ {baud}, interval {interval_ms}ms, {duration_ms}ms, frame={:?}",
+                cfg.frame_mode
+            );
             h
         }
         Err(e) => {
@@ -219,7 +237,7 @@ fn run_cli_loop(port: &str, baud: u32, interval_ms: u64, duration_ms: u64) {
                 println!("[{port}] RX {:>4}B: {hex} |{ascii}|", d.len());
             }
             Ok(RxEvent::Error(e)) => {
-                eprintln!("[{port}] READ ERROR: {e}");
+                eprintln!("[{port}] {e}");
                 break;
             }
             Ok(RxEvent::Closed) => break,
@@ -239,6 +257,7 @@ fn run_cli_send(port: &str, baud: u32, words: &[String]) {
     let cfg = SerialConfig {
         port_name: port.into(),
         baud_rate: baud,
+        frame_mode: cli_frame_mode(),
         ..Default::default()
     };
     let (tx, rx) = mpsc::channel::<RxEvent>();
@@ -278,12 +297,16 @@ fn run_cli_recv(port: &str, baud: u32, duration_ms: u64) {
     let cfg = SerialConfig {
         port_name: port.into(),
         baud_rate: baud,
+        frame_mode: cli_frame_mode(),
         ..Default::default()
     };
     let (tx, rx) = mpsc::channel::<RxEvent>();
     let handle = match open(&cfg, tx) {
         Ok(h) => {
-            println!("[cli] opened {port} @ {baud}, receiving {duration_ms} ms");
+            println!(
+                "[cli] opened {port} @ {baud}, receiving {duration_ms} ms, frame={:?}",
+                cfg.frame_mode
+            );
             h
         }
         Err(e) => {
@@ -300,7 +323,7 @@ fn run_cli_recv(port: &str, baud: u32, duration_ms: u64) {
                 println!("[{port}] RX {:>4}B: {hex} |{ascii}|", d.len());
             }
             Ok(RxEvent::Error(e)) => {
-                eprintln!("[{port}] READ ERROR: {e}");
+                eprintln!("[{port}] {e}");
                 handle.close();
                 return;
             }

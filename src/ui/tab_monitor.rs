@@ -108,23 +108,28 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
             ui.set_min_height((total_h - 20.0).max(80.0));
             ui.set_width(ui.available_width());
 
-            // 实时过滤栏
+            // 实时过滤栏:胶囊搜索框填满左侧,右侧固定摆放清除按钮与计数
             let filtering = !app.monitor_filter.trim().is_empty();
             ui.horizontal(|ui| {
-                ui.label(RichText::new("筛选").color(TEXT_DIM));
-                let field_w = (ui.available_width() - 78.0).max(120.0);
-                let resp = ui.add(
-                    egui::TextEdit::singleline(&mut app.monitor_filter)
-                        .desired_width(field_w)
-                        .hint_text("COM端口/进程/RX/TX/HEX/文本,空格分隔,多个条件任一命中"),
-                );
+                // × 按钮 22 + 计数 ~64 + 两个间距,提前预留,避免换行/溢出
+                let reserved = if filtering { 22.0 + 64.0 + 16.0 } else { 0.0 };
+                let field_w = (ui.available_width() - reserved).max(120.0);
+                let resp = ui
+                    .allocate_ui(egui::vec2(field_w, 26.0), |ui| {
+                        crate::ui::search_field(
+                            ui,
+                            &mut app.monitor_filter,
+                            "COM端口/进程/RX/TX/HEX/文本,空格分隔,多个条件任一命中",
+                        )
+                    })
+                    .inner;
                 if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     app.monitor_filter.clear();
                 }
-                if filtering && ui.small_button("×").on_hover_text("清除过滤").clicked() {
-                    app.monitor_filter.clear();
-                }
                 if filtering {
+                    if ui.small_button("×").on_hover_text("清除过滤").clicked() {
+                        app.monitor_filter.clear();
+                    }
                     let shown = app
                         .monitor_lines
                         .iter()

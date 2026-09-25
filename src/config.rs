@@ -58,6 +58,7 @@ pub fn save(cfg: &AppConfig) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::serial::port::FrameMode;
     use crate::serial::preset::{DataFormat, SendPreset};
 
     #[test]
@@ -75,6 +76,7 @@ mod tests {
                 stop_bits: 2.0,
                 parity: "Even".into(),
                 flow_control: "Hardware".into(),
+                frame_mode: FrameMode::Newline,
             },
             presets: vec![
                 SendPreset {
@@ -106,6 +108,7 @@ mod tests {
         let loaded = load();
         assert_eq!(loaded.last_serial.port_name, "COM7");
         assert_eq!(loaded.last_serial.baud_rate, 921600);
+        assert_eq!(loaded.last_serial.frame_mode, FrameMode::Newline);
         assert_eq!(loaded.presets.len(), 2);
         assert_eq!(loaded.presets[1].name, "心跳");
         assert_eq!(loaded.presets[1].repeat_interval_ms, Some(1000));
@@ -120,6 +123,7 @@ mod tests {
         std::env::set_var("APPDATA", &base2);
         let def = load();
         assert_eq!(def.last_serial.baud_rate, 115200);
+        assert_eq!(def.last_serial.frame_mode, FrameMode::Idle);
         assert!(def.presets.is_empty());
         let _ = std::fs::remove_dir_all(&base2);
     }

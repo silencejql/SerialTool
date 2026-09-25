@@ -5,12 +5,83 @@ pub mod tab_monitor;
 pub mod tab_sendrecv;
 pub mod theme;
 
-use egui::RichText;
+use egui::{pos2, vec2, Color32, FontId, RichText, Sense, Stroke};
 
 use crate::app::{SerialApp, Tab};
 use crate::logger::{hex_string, visible_ascii};
 use crate::serial::preset::DataFormat;
 use theme::*;
+
+/// 主操作「发送」按钮:自绘纸飞机图标(不依赖 emoji 字形,杜绝小方块)
+pub fn send_button(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
+    let size = vec2(96.0, 24.0);
+    let sense = if enabled { Sense::click() } else { Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(size, sense);
+    if rect.is_positive() {
+        let bg = if !enabled {
+            WIDGET
+        } else if resp.is_pointer_button_down_on() {
+            ACCENT_ACTIVE
+        } else if resp.hovered() {
+            ACCENT_HOVER
+        } else {
+            ACCENT
+        };
+        let painter = ui.painter();
+        painter.rect_filled(rect, 6.0, bg);
+        let fg = if enabled { Color32::WHITE } else { TEXT_DIM };
+        let cy = rect.center().y;
+        // 图标与文字作为整体水平居中:图标宽 11 + 间距 6 + 文字宽 ~28
+        let x0 = rect.center().x - 22.0;
+        let tri = [
+            pos2(x0, cy - 6.0),
+            pos2(x0, cy + 6.0),
+            pos2(x0 + 11.0, cy),
+        ];
+        painter.add(egui::Shape::convex_polygon(tri.to_vec(), fg, Stroke::NONE));
+        painter.text(
+            pos2(x0 + 11.0 + 20.0, cy),
+            egui::Align2::CENTER_CENTER,
+            "发送",
+            FontId::new(13.0, egui::FontFamily::Proportional),
+            fg,
+        );
+    }
+    resp
+}
+
+/// 圆角胶囊样式的搜索/过滤输入框:自绘放大镜图标(不依赖 emoji 字形),
+/// 填满当前可用宽度。返回内部 TextEdit 的响应(用于 Esc 清除等)。
+pub fn search_field(ui: &mut egui::Ui, value: &mut String, hint: &str) -> egui::Response {
+    egui::Frame::none()
+        .fill(WIDGET)
+        .stroke(Stroke::new(1_f32, BORDER))
+        .rounding(13.0)
+        .inner_margin(egui::Margin::symmetric(10.0, 0.0))
+        .show(ui, |ui| {
+            ui.set_height(24.0);
+            ui.horizontal_centered(|ui| {
+                let (_, icon_rect) = ui.allocate_space(vec2(13.0, 13.0));
+                let p = ui.painter();
+                let c = icon_rect.center() + vec2(-1.5, -1.5);
+                p.circle_stroke(c, 4.0, Stroke::new(1.5_f32, TEXT_DIM));
+                p.line_segment(
+                    [c + vec2(2.5, 2.5), c + vec2(5.5, 5.5)],
+                    Stroke::new(1.5_f32, TEXT_DIM),
+                );
+                ui.add_space(3.0);
+                ui.add(
+                    egui::TextEdit::singleline(value)
+                        .frame(false)
+                        .vertical_align(egui::Align::Center)
+                        .desired_width(ui.available_width())
+                        .hint_text(hint),
+                )
+            })
+            .inner
+        })
+        .inner
+}
 
 pub fn format_data(data: &[u8], fmt: DataFormat) -> String {
     match fmt {

@@ -83,28 +83,31 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
 
             let files = app.list_log_files();
             ui.horizontal(|ui| {
-                ui.label("关键词");
-                let resp = ui.add(
-                    egui::TextEdit::singleline(&mut app.log_query)
-                        .desired_width(200.0)
-                        .hint_text("逗号分隔多个(空=全部)"),
-                );
+                // 预留:文件下拉 160 + 查询 ~52 + 清空结果 ~76 + 三处间距
+                let reserved = 160.0 + 52.0 + 76.0 + 24.0;
+                let field_w = (ui.available_width() - reserved).max(180.0);
+                let resp = ui
+                    .allocate_ui(egui::vec2(field_w, 26.0), |ui| {
+                        crate::ui::search_field(
+                            ui,
+                            &mut app.log_query,
+                            "搜索关键词,逗号分隔多个(空=全部),回车查询",
+                        )
+                    })
+                    .inner;
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    app.search_logs();
+                }
                 egui::ComboBox::from_id_salt("log_query_file")
                     .selected_text(app.log_query_file.as_deref().unwrap_or("全部文件"))
                     .width(160.0)
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut app.log_query_file, None, "全部文件");
                         for f in &files {
-                            ui.selectable_value(
-                                &mut app.log_query_file,
-                                Some(f.clone()),
-                                f,
-                            );
+                            ui.selectable_value(&mut app.log_query_file, Some(f.clone()), f);
                         }
                     });
-                let enter = resp.lost_focus()
-                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if ui.button("查询").clicked() || enter {
+                if ui.button("查询").on_hover_text("也可在输入框按回车").clicked() {
                     app.search_logs();
                 }
                 if !app.log_results.is_empty() && ui.button("清空结果").clicked() {

@@ -2,6 +2,7 @@
 use egui::{RichText, ScrollArea, TextEdit};
 
 use crate::app::SerialApp;
+use crate::serial::port::FrameMode;
 use crate::serial::preset::{DataFormat, SendPreset};
 use crate::ui::theme::*;
 
@@ -155,6 +156,26 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
                                 }
                             });
                         ui.end_row();
+
+                        ui.label("接收组帧");
+                        egui::ComboBox::from_id_salt("frame_mode_combo")
+                            .selected_text(frame_mode_label(app.serial_cfg.frame_mode))
+                            .width(130.0)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut app.serial_cfg.frame_mode,
+                                    FrameMode::Idle,
+                                    "空闲间隔",
+                                )
+                                .on_hover_text("总线空闲约 10ms 即一帧:自动合并被拆分的消息(默认)");
+                                ui.selectable_value(
+                                    &mut app.serial_cfg.frame_mode,
+                                    FrameMode::Newline,
+                                    "换行符 LF",
+                                )
+                                .on_hover_text("按 \\n 切分成帧(兼容 \\r\\n),适合 AT/文本行协议");
+                            });
+                        ui.end_row();
                     });
             });
             ui.label(
@@ -233,7 +254,7 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
                                 .on_hover_text("勾选:内联显示并可直接修改内容;取消:只显示名称");
                                 if has_interval {
                                     ui.label(
-                                        RichText::new(format!("⏱{interval_text}"))
+                                        RichText::new(format!("每{interval_text}"))
                                             .color(ACCENT)
                                             .small(),
                                     );
@@ -362,5 +383,12 @@ fn stop_label(v: f32) -> String {
         "2".into()
     } else {
         "1".into()
+    }
+}
+
+fn frame_mode_label(m: FrameMode) -> &'static str {
+    match m {
+        FrameMode::Idle => "空闲间隔",
+        FrameMode::Newline => "换行符 LF",
     }
 }
