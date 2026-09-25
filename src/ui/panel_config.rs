@@ -52,7 +52,7 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
                                         }
                                     }
                                 });
-                            if ui.small_button("⟳").on_hover_text("刷新端口列表").clicked() {
+                            if ui.small_button("刷新").on_hover_text("刷新端口列表").clicked() {
                                 app.refresh_ports();
                             }
                         });

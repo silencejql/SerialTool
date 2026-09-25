@@ -28,16 +28,16 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
             // 实时过滤栏
             let filtering = !app.recv_filter.trim().is_empty();
             ui.horizontal(|ui| {
-                ui.label(RichText::new("🔍").color(TEXT_DIM));
+                ui.label(RichText::new("筛选").color(TEXT_DIM));
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut app.recv_filter)
                         .desired_width(220.0)
-                        .hint_text("过滤(端口/RX/TX/HEX/文本,空格分隔)"),
+                        .hint_text("端口/RX/TX/HEX/文本,空格分隔"),
                 );
                 if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     app.recv_filter.clear();
                 }
-                if filtering && ui.small_button("✕").on_hover_text("清除过滤").clicked() {
+                if filtering && ui.small_button("×").on_hover_text("清除过滤").clicked() {
                     app.recv_filter.clear();
                 }
                 if filtering {
@@ -100,7 +100,7 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let connected = app.serial_handle.is_some();
                     if ui
-                        .add_enabled(connected, egui::Button::new("发送  ⏎").fill(ACCENT).min_size(egui::vec2(96.0, 24.0)))
+                        .add_enabled(connected, egui::Button::new("发 送").fill(ACCENT).min_size(egui::vec2(96.0, 24.0)))
                         .on_disabled_hover_text("请先在左侧打开串口")
                         .clicked()
                     {

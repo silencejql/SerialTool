@@ -37,6 +37,12 @@ pub fn build_ui(app: &mut SerialApp, ctx: &egui::Context) {
             ui.horizontal_centered(|ui| {
                 ui.add_space(4.0);
                 ui.heading(RichText::new("◆ SerialTool").color(ACCENT).strong());
+                ui.label(
+                    RichText::new(format!("v{}", env!("APP_VERSION")))
+                        .color(TEXT_DIM)
+                        .small()
+                        .monospace(),
+                );
                 ui.label(RichText::new("串口收发 / 监控").color(TEXT_DIM));
                 ui.separator();
                 for (tab, name) in [

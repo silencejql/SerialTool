@@ -55,13 +55,18 @@ pub enum RxEvent {
 
 pub struct SerialHandle {
     writer: Box<dyn SerialPort>,
+    /// 后台写线程的发送队列(UI 线程只入队,绝不阻塞)
+    write_tx: Option<mpsc::Sender<Vec<u8>>>,
+    write_join: Option<JoinHandle<()>>,
     stop: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
 }
 
 impl SerialHandle {
     pub fn send(&mut self, data: &[u8]) -> Result<(), String> {
-        self.writer.write_all(data).map_err(|e| e.to_string())
+        let tx = self.write_tx.as_ref().ok_or("串口未连接")?;
+        tx.send(data.to_vec())
+            .map_err(|_| "串口已关闭".to_string())
     }
 
     /// 复制底层串口句柄(dup,共享同一设备句柄),供额外的写线程使用
@@ -71,6 +76,11 @@ impl SerialHandle {
 
     pub fn close(mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        // 关闭写队列并等待后台写线程退出
+        self.write_tx.take();
+        if let Some(j) = self.write_join.take() {
+            let _ = j.join();
+        }
         if let Some(j) = self.join.take() {
             let _ = j.join();
         }
@@ -80,6 +90,10 @@ impl SerialHandle {
 impl Drop for SerialHandle {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        self.write_tx.take();
+        if let Some(j) = self.write_join.take() {
+            let _ = j.join();
+        }
         if let Some(j) = self.join.take() {
             let _ = j.join();
         }
@@ -116,6 +130,22 @@ pub fn open(
         .try_clone()
         .map_err(|e| format!("克隆串口句柄失败: {e}"))?;
 
+    // 再 clone 一份给后台写线程:UI 线程只把数据放入队列立即返回,
+    // 避免 write_all 阻塞界面(表现为点发送后卡顿、日志延迟出现)。
+    let mut bg_writer = port
+        .try_clone()
+        .map_err(|e| format!("克隆串口句柄失败: {e}"))?;
+    let (write_tx, write_rx) = mpsc::channel::<Vec<u8>>();
+    let write_err_tx = tx.clone();
+    let write_join = thread::spawn(move || {
+        while let Ok(data) = write_rx.recv() {
+            if let Err(e) = bg_writer.write_all(&data) {
+                let _ = write_err_tx.send(RxEvent::Error(format!("发送失败: {e}")));
+                break;
+            }
+        }
+    });
+
     let stop = Arc::new(AtomicBool::new(false));
     let stop_reader = stop.clone();
     let join = thread::spawn(move || {
@@ -140,6 +170,8 @@ pub fn open(
 
     Ok(SerialHandle {
         writer: port,
+        write_tx: Some(write_tx),
+        write_join: Some(write_join),
         stop,
         join: Some(join),
     })

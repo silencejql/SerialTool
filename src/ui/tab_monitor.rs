@@ -33,7 +33,7 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
 
     // ---- 扫描 / 控制 ----
     ui.horizontal(|ui| {
-        let scan_label = if app.scanning { "扫描中…" } else { "⟳ 扫描串口进程" };
+        let scan_label = if app.scanning { "扫描中…" } else { "扫描串口进程" };
         if ui
             .add_enabled(!app.scanning, egui::Button::new(scan_label).fill(ACCENT))
             .on_hover_text("枚举当前已打开串口的进程")
@@ -111,16 +111,16 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
             // 实时过滤栏
             let filtering = !app.monitor_filter.trim().is_empty();
             ui.horizontal(|ui| {
-                ui.label(RichText::new("🔍").color(TEXT_DIM));
+                ui.label(RichText::new("筛选").color(TEXT_DIM));
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut app.monitor_filter)
                         .desired_width(240.0)
-                        .hint_text("过滤(COM端口/进程/RX/TX/HEX/文本,空格分隔)"),
+                        .hint_text("COM端口/进程/RX/TX/HEX/文本,空格分隔"),
                 );
                 if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     app.monitor_filter.clear();
                 }
-                if filtering && ui.small_button("✕").on_hover_text("清除过滤").clicked() {
+                if filtering && ui.small_button("×").on_hover_text("清除过滤").clicked() {
                     app.monitor_filter.clear();
                 }
                 if filtering {

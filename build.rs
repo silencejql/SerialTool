@@ -40,4 +40,23 @@ fn main() {
     println!("cargo:rerun-if-changed=assets/app_icon.rc");
     println!("cargo:rerun-if-changed=assets/icon.ico");
     embed_resource::compile("assets/app_icon.rc", embed_resource::NONE);
+
+    // ---- 发布版本号 ----
+    // release 构建时把 assets/build_num.txt 内的构建号 +1,
+    // 组合成 "主.次.补丁.构建号"(如 0.1.0.7)通过 APP_VERSION 注入程序;
+    // debug 构建不递增,带 -dev 后缀。发布请用 release.ps1(会强制重跑本脚本)。
+    println!("cargo:rerun-if-env-changed=PROFILE");
+    let profile = std::env::var("PROFILE").unwrap_or_default();
+    let num_file = manifest.join("assets").join("build_num.txt");
+    let mut build_num: u32 = std::fs::read_to_string(&num_file)
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+    if profile == "release" {
+        build_num += 1;
+        std::fs::write(&num_file, build_num.to_string()).expect("写入 build_num.txt 失败");
+    }
+    let pkg_version = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".into());
+    let suffix = if profile == "release" { "" } else { "-dev" };
+    println!("cargo:rustc-env=APP_VERSION={pkg_version}.{build_num}{suffix}");
 }

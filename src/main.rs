@@ -67,7 +67,7 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1180.0, 760.0])
             .with_min_inner_size([820.0, 520.0])
-            .with_title("SerialTool")
+            .with_title(format!("SerialTool v{}", env!("APP_VERSION")))
             .with_icon(egui::IconData {
                 rgba: include_bytes!("../assets/icon_64.rgba").to_vec(),
                 width: 64,
