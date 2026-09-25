@@ -8,6 +8,12 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serialport::{DataBits, FlowControl, Parity, SerialPort, StopBits};
 
+/// 接收断帧间隔(ms):总线空闲超过该时长才把缓冲作为一帧,
+/// 用于把一次消息被拆成的多次 read 合并回一条。
+const RX_GAP_MS: u64 = 10;
+/// 单帧聚合上限,超过则提前成帧(应对持续数据流)
+const MAX_RX_FRAME: usize = 64 * 1024;
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SerialConfig {
     pub port_name: String,
@@ -129,6 +135,11 @@ pub fn open(
     let mut reader = port
         .try_clone()
         .map_err(|e| format!("克隆串口句柄失败: {e}"))?;
+    // reader 用短超时作为"断帧间隔":一次消息可能被驱动拆成多次 read,
+    // 读到数据后继续在该窗口内合并后续字节,总线空闲超过该时长才成帧。
+    reader
+        .set_timeout(Duration::from_millis(RX_GAP_MS))
+        .map_err(|e| format!("设置串口超时失败: {e}"))?;
 
     // 再 clone 一份给后台写线程:UI 线程只把数据放入队列立即返回,
     // 避免 write_all 阻塞界面(表现为点发送后卡顿、日志延迟出现)。
@@ -150,15 +161,28 @@ pub fn open(
     let stop_reader = stop.clone();
     let join = thread::spawn(move || {
         let mut buf = [0u8; 4096];
+        // 接收帧聚合缓冲:把断帧间隔内连续到达的字节合并为一帧
+        let mut frame: Vec<u8> = Vec::new();
         while !stop_reader.load(Ordering::Relaxed) {
             match reader.read(&mut buf) {
                 Ok(n) if n > 0 => {
-                    if tx.send(RxEvent::Data(buf[..n].to_vec())).is_err() {
-                        break;
+                    frame.extend_from_slice(&buf[..n]);
+                    // 缓冲达到上限先成帧,防止连续流时无限积压
+                    if frame.len() >= MAX_RX_FRAME {
+                        if tx.send(RxEvent::Data(std::mem::take(&mut frame))).is_err() {
+                            break;
+                        }
                     }
                 }
                 Ok(_) => {}
-                Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {}
+                Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                    // 一个断帧间隔内无新字节:已攒到的数据作为一帧上报
+                    if !frame.is_empty()
+                        && tx.send(RxEvent::Data(std::mem::take(&mut frame))).is_err()
+                    {
+                        break;
+                    }
+                }
                 Err(e) => {
                     let _ = tx.send(RxEvent::Error(e.to_string()));
                     break;
