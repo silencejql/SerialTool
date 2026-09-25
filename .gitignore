@@ -1,5 +1,6 @@
 /target
 *.png
+!assets/icon_source.png
 *.log
 .trae/
 sscom.ini
