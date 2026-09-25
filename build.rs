@@ -35,4 +35,9 @@ fn main() {
              cargo build -p serial_agent --release --target i686-pc-windows-msvc",
         );
     }
+
+    // 嵌入 exe 图标(assets/app_icon.rc 引用 icon.ico)
+    println!("cargo:rerun-if-changed=assets/app_icon.rc");
+    println!("cargo:rerun-if-changed=assets/icon.ico");
+    embed_resource::compile("assets/app_icon.rc", embed_resource::NONE);
 }

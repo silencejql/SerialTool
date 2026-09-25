@@ -74,5 +74,78 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
             if ui.button("立即保存当前收发记录").clicked() {
                 app.export_current_log();
             }
+
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(4.0);
+            ui.heading(RichText::new("日志查询").color(ACCENT));
+            ui.add_space(4.0);
+
+            let files = app.list_log_files();
+            ui.horizontal(|ui| {
+                ui.label("关键词");
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut app.log_query)
+                        .desired_width(200.0)
+                        .hint_text("逗号分隔多个(空=全部)"),
+                );
+                egui::ComboBox::from_id_salt("log_query_file")
+                    .selected_text(app.log_query_file.as_deref().unwrap_or("全部文件"))
+                    .width(160.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut app.log_query_file, None, "全部文件");
+                        for f in &files {
+                            ui.selectable_value(
+                                &mut app.log_query_file,
+                                Some(f.clone()),
+                                f,
+                            );
+                        }
+                    });
+                let enter = resp.lost_focus()
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if ui.button("查询").clicked() || enter {
+                    app.search_logs();
+                }
+                if !app.log_results.is_empty() && ui.button("清空结果").clicked() {
+                    app.log_results.clear();
+                }
+            });
+
+            if !app.log_results.is_empty() {
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(format!("共 {} 行命中", app.log_results.len()))
+                        .color(TEXT_DIM)
+                        .small(),
+                );
+                egui::ScrollArea::vertical()
+                    .id_salt("log_query_results")
+                    .max_height(320.0)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        let mut last_file = String::new();
+                        for (file, line) in &app.log_results {
+                            if *file != last_file {
+                                last_file = file.clone();
+                                ui.add_space(4.0);
+                                ui.label(
+                                    RichText::new(format!("— {file} —"))
+                                        .color(ACCENT)
+                                        .small()
+                                        .strong(),
+                                );
+                            }
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(line).monospace().small(),
+                                )
+                                .selectable(true)
+                                .wrap_mode(egui::TextWrapMode::Extend),
+                            );
+                        }
+                    });
+            }
         });
 }

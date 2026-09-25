@@ -119,6 +119,12 @@ pub struct SerialApp {
 
     pub log_cfg: LogConfig,
     pub logger: Logger,
+    /// 日志查询关键词
+    pub log_query: String,
+    /// 日志查询选中的文件(None=全部)
+    pub log_query_file: Option<String>,
+    /// 日志查询结果:(文件名, 行内容)
+    pub log_results: Vec<(String, String)>,
 
     cfg: AppConfig,
     serial_tx: mpsc::Sender<RxEvent>,
@@ -188,6 +194,9 @@ impl SerialApp {
             monitor_auto_scroll: true,
             log_cfg,
             logger,
+            log_query: String::new(),
+            log_query_file: None,
+            log_results: Vec::new(),
             cfg,
             serial_tx,
             serial_rx,
@@ -485,6 +494,69 @@ impl SerialApp {
                 join: Some(join),
             });
         }
+    }
+
+    /// 日志目录下的 .log 文件名(按修改时间新→旧)
+    pub fn list_log_files(&self) -> Vec<String> {
+        let dir = Path::new(&self.log_cfg.dir);
+        let mut files: Vec<_> = std::fs::read_dir(dir)
+            .map(|rd| {
+                rd.flatten()
+                    .filter(|e| {
+                        e.path()
+                            .extension()
+                            .is_some_and(|x| x.eq_ignore_ascii_case("log"))
+                    })
+                    .filter_map(|e| {
+                        let m = e.metadata().and_then(|m| m.modified()).ok()?;
+                        Some((e.file_name().to_string_lossy().into_owned(), m))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        files.sort_by(|a, b| b.1.cmp(&a.1));
+        files.into_iter().map(|(n, _)| n).collect()
+    }
+
+    /// 按关键词(可含逗号分隔多个,任一命中)在日志目录检索,大小写不敏感
+    pub fn search_logs(&mut self) {
+        const MAX_RESULTS: usize = 2000;
+        self.log_results.clear();
+        let kws: Vec<String> = self
+            .log_query
+            .split([',', '，'])
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        let mut names = self.list_log_files();
+        if let Some(sel) = &self.log_query_file {
+            names.retain(|n| n == sel);
+        }
+
+        let mut truncated = false;
+        'outer: for name in names {
+            let path = Path::new(&self.log_cfg.dir).join(&name);
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            for line in content.lines() {
+                let hit = kws.is_empty()
+                    || kws.iter().any(|k| line.to_lowercase().contains(k));
+                if hit {
+                    self.log_results.push((name.clone(), line.to_string()));
+                    if self.log_results.len() >= MAX_RESULTS {
+                        truncated = true;
+                        break 'outer;
+                    }
+                }
+            }
+        }
+        self.status = if truncated {
+            format!("日志查询:命中达到上限 {MAX_RESULTS} 行,请缩小范围")
+        } else {
+            format!("日志查询:命中 {} 行", self.log_results.len())
+        };
     }
 
     pub fn export_current_log(&mut self) {
