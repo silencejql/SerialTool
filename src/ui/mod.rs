@@ -100,7 +100,8 @@ pub fn build_ui(app: &mut SerialApp, ctx: &egui::Context) {
                     app.export_current_log();
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new(&app.status).color(TEXT_DIM));
+                    let color = if app.status_err { ERR_C } else { TEXT_DIM };
+                    ui.label(RichText::new(&app.status).color(color));
                 });
             });
         });
@@ -213,7 +214,7 @@ fn preset_editor(app: &mut SerialApp, ctx: &egui::Context) {
                             app.editor_open = false;
                             app.sync_repeat_threads();
                         }
-                        Err(e) => app.status = format!("预设数据格式错误: {e}"),
+                        Err(e) => app.set_error(format!("预设数据格式错误: {e}")),
                     }
                 }
                 if ui.button("取消").clicked() {

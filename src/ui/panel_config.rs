@@ -335,10 +335,10 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
                 if send_now {
                     if let Ok(data) = app.presets[i].decode() {
                         if let Err(e) = app.send_bytes(&data) {
-                            app.status = e;
+                            app.set_error(e);
                         }
                     } else {
-                        app.status = "预设数据格式错误".into();
+                        app.set_error("预设数据格式错误");
                     }
                 }
                 if card_resync {

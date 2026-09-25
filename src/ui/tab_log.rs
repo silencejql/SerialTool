@@ -36,7 +36,7 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
                 }
                 if ui.button("选择并创建").clicked() {
                     let _ = std::fs::create_dir_all(&app.log_cfg.dir);
-                    app.status = format!("日志目录:{}", app.log_cfg.dir);
+                    app.set_status(format!("日志目录:{}", app.log_cfg.dir));
                 }
             });
 
@@ -56,7 +56,7 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
 
             if changed {
                 app.logger.update_cfg(app.log_cfg.clone());
-                app.status = "日志配置已更新".into();
+                app.set_status("日志配置已更新");
             }
 
             ui.add_space(10.0);

@@ -116,6 +116,8 @@ pub struct SerialApp {
     pub baud_input: String,
     pub serial_handle: Option<SerialHandle>,
     pub status: String,
+    /// 当前状态是否为错误(状态栏以红色显示)
+    pub status_err: bool,
 
     pub display_format: DataFormat,
     pub lines: Vec<LogLine>,
@@ -169,6 +171,18 @@ pub struct SerialApp {
 }
 
 impl SerialApp {
+    /// 设置普通(信息)状态
+    pub(crate) fn set_status(&mut self, msg: impl Into<String>) {
+        self.status = msg.into();
+        self.status_err = false;
+    }
+
+    /// 设置错误状态(状态栏红色显示)
+    pub(crate) fn set_error(&mut self, msg: impl Into<String>) {
+        self.status = msg.into();
+        self.status_err = true;
+    }
+
     pub fn new(cc: &eframe::CreationContext) -> Self {
         crate::ui::theme::setup_fonts(&cc.egui_ctx);
         crate::ui::theme::apply(&cc.egui_ctx);
@@ -204,6 +218,7 @@ impl SerialApp {
             baud_input,
             serial_handle: None,
             status: "就绪".into(),
+            status_err: false,
             display_format: cfg.display_format,
             lines: Vec::new(),
             auto_scroll: true,
@@ -260,10 +275,10 @@ impl SerialApp {
                         data,
                     ));
                 }
-                RxEvent::Error(e) => self.status = format!("串口错误: {e}"),
+                RxEvent::Error(e) => self.set_error(format!("串口错误: {e}")),
                 RxEvent::Closed => {
                     self.serial_handle = None;
-                    self.status = "串口已关闭".into();
+                    self.set_status("串口已关闭");
                 }
             }
         }
@@ -285,7 +300,7 @@ impl SerialApp {
                         .map(|t| t.name.clone())
                         .unwrap_or_else(|| format!("pid {pid}"));
                     self.targets.insert(pid, MonTarget { name: name.clone(), online: true });
-                    self.status = format!("监控中:{name} (pid {pid}),双向数据流已接管");
+                    self.set_status(format!("监控中:{name} (pid {pid}),双向数据流已接管"));
                     self.push_monitor_line(LogLine::note(
                         Local::now(),
                         String::new(),
@@ -339,7 +354,7 @@ impl SerialApp {
                 if !t.online {
                     let name = t.name.clone();
                     self.targets.remove(&pid);
-                    self.status = format!("注入 {name} (pid {pid}) 后 agent 未上线");
+                    self.set_error(format!("注入 {name} (pid {pid}) 后 agent 未上线"));
                     self.push_monitor_line(LogLine::note(
                         Local::now(),
                         String::new(),
@@ -382,7 +397,7 @@ impl SerialApp {
     pub fn inject_pid(&mut self, pid: u32, name: String) {
         match injection::inject::inject(pid) {
             Ok(()) => {
-                self.status = format!("已向 {name} (pid {pid}) 注入,等待 agent 上线…");
+                self.set_status(format!("已向 {name} (pid {pid}) 注入,等待 agent 上线…"));
                 self.targets
                     .entry(pid)
                     .or_insert_with(|| MonTarget { name: name.clone(), online: false });
@@ -395,7 +410,7 @@ impl SerialApp {
                 ));
             }
             Err(e) => {
-                self.status = format!("注入失败: {e}");
+                self.set_error(format!("注入失败: {e}"));
                 self.push_monitor_line(LogLine::note(
                     Local::now(),
                     String::new(),
@@ -464,10 +479,10 @@ impl SerialApp {
         let cfg = self.serial_cfg.clone();
         match open(&cfg, self.serial_tx.clone()) {
             Ok(h) => {
-                self.status = format!("已打开 {} @ {} bps", cfg.port_name, cfg.baud_rate);
+                self.set_status(format!("已打开 {} @ {} bps", cfg.port_name, cfg.baud_rate));
                 self.serial_handle = Some(h);
             }
-            Err(e) => self.status = e,
+            Err(e) => self.set_error(e),
         }
     }
 
@@ -585,11 +600,11 @@ impl SerialApp {
                 }
             }
         }
-        self.status = if truncated {
+        self.set_status(if truncated {
             format!("日志查询:命中达到上限 {MAX_RESULTS} 行,请缩小范围")
         } else {
             format!("日志查询:命中 {} 行", self.log_results.len())
-        };
+        });
     }
 
     pub fn export_current_log(&mut self) {
@@ -614,8 +629,8 @@ impl SerialApp {
             .collect();
         entries.sort_by_key(|e| e.ts);
         match Logger::export_lines(&path, &entries) {
-            Ok(()) => self.status = format!("已保存: {}", path.display()),
-            Err(e) => self.status = format!("保存失败: {e}"),
+            Ok(()) => self.set_status(format!("已保存: {}", path.display())),
+            Err(e) => self.set_error(format!("保存失败: {e}")),
         }
     }
 

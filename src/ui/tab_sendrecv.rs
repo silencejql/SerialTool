@@ -143,9 +143,9 @@ fn do_send(app: &mut SerialApp) {
     match tmp.decode() {
         Ok(data) => {
             if let Err(e) = app.send_bytes(&data) {
-                app.status = format!("发送失败: {e}");
+                app.set_error(format!("发送失败: {e}"));
             }
         }
-        Err(e) => app.status = format!("数据格式错误: {e}"),
+        Err(e) => app.set_error(format!("数据格式错误: {e}")),
     }
 }
