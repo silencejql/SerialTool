@@ -1,10 +1,11 @@
 //! 科技风浅色主题配色与样式覆写(主配色为白色)
 use egui::{Color32, FontFamily, FontId, Rounding, Stroke, TextStyle};
 
-/// 运行时加载 Windows 系统字体(不内嵌,不增加 exe 体积):
+/// 运行时加载 Windows 系统字体(不内嵌,不增加 exe 体积;egui 的 default_fonts
+/// 特性已关闭,全部字形依赖系统字体):
 /// - 界面整体以微软雅黑为首选,中英文同一字体,混排字重/基线统一、笔画饱满;
 /// - HEX/数据等宽区以 Consolas 为首选(数字字母严格对齐),中文回退雅黑;
-/// - egui 内置字体保留在回退链末端,兜底罕见字符。
+/// - 界面用到的符号(◆ ● ○ ■ ◐ × · ＋)均为雅黑覆盖的几何/全角字符。
 pub fn setup_fonts(ctx: &egui::Context) {
     const CJK_FONTS: &[&str] = &[
         r"C:\Windows\Fonts\msyh.ttc",
@@ -13,7 +14,13 @@ pub fn setup_fonts(ctx: &egui::Context) {
     ];
     const MONO_FONTS: &[&str] = &[r"C:\Windows\Fonts\consola.ttf"];
 
+    // 关闭 default_fonts 后 default() 为空定义,手动确保两族条目存在
     let mut fonts = egui::FontDefinitions::default();
+    fonts
+        .families
+        .entry(FontFamily::Proportional)
+        .or_default();
+    fonts.families.entry(FontFamily::Monospace).or_default();
 
     if let Some(data) = CJK_FONTS.iter().find_map(|p| std::fs::read(p).ok()) {
         fonts
