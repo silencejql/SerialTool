@@ -9,6 +9,13 @@ use crate::ui::data_row;
 pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
     let total_h = ui.available_height();
 
+    // 高度预算:发送框固定约 136px(含外边距),其余全部给数据显示区
+    const SEND_H: f32 = 136.0;
+    const GAP: f32 = 6.0;
+    const FRAME_PAD: f32 = 16.0; // 数据框上下内边距
+    const FILTER_H: f32 = 28.0; // 过滤栏 + 间距
+    let scroll_h = (total_h - SEND_H - GAP - FRAME_PAD - FILTER_H).max(80.0);
+
     // ---- 数据显示区 ----
     egui::Frame::none()
         .fill(BG)
@@ -16,7 +23,6 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
         .rounding(8_f32)
         .inner_margin(egui::Margin::same(8_f32))
         .show(ui, |ui| {
-            ui.set_min_height(total_h - 168.0);
             ui.set_width(ui.available_width());
 
             // 实时过滤栏
@@ -47,9 +53,11 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
             ui.add_space(2.0);
 
             ScrollArea::vertical()
+                .max_height(scroll_h)
                 .auto_shrink([false, false])
                 .stick_to_bottom(app.auto_scroll && !filtering)
                 .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
                     if app.lines.is_empty() {
                         ui.label(
                             RichText::new("暂无数据 —— 打开串口后开始收发")
