@@ -33,6 +33,10 @@ pub fn build_ui(app: &mut SerialApp, ctx: &egui::Context) {
     // ---- 顶栏 ----
     egui::TopBottomPanel::top("top_bar")
         .exact_height(48.0)
+        .frame(
+            egui::Frame::side_top_panel(ctx.style().as_ref())
+                .inner_margin(egui::Margin::symmetric(8.0, 6.0)),
+        )
         .show(ctx, |ui| {
             ui.horizontal_centered(|ui| {
                 ui.add_space(4.0);
@@ -78,7 +82,11 @@ pub fn build_ui(app: &mut SerialApp, ctx: &egui::Context) {
 
     // ---- 底栏 ----
     egui::TopBottomPanel::bottom("status_bar")
-        .exact_height(34.0)
+        .exact_height(36.0)
+        .frame(
+            egui::Frame::side_top_panel(ctx.style().as_ref())
+                .inner_margin(egui::Margin::symmetric(8.0, 4.0)),
+        )
         .show(ctx, |ui| {
             ui.horizontal_centered(|ui| {
                 ui.label(RichText::new(format!("RX: {}", human_bytes(app.rx_bytes))).color(RX_C));

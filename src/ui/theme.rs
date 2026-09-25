@@ -1,29 +1,40 @@
 //! 科技风浅色主题配色与样式覆写(主配色为白色)
-use egui::{Color32, FontFamily, Rounding, Stroke};
+use egui::{Color32, FontFamily, FontId, Rounding, Stroke, TextStyle};
 
-/// 运行时加载 Windows 系统中文字体作为回退(不内嵌,不增加 exe 体积)
+/// 运行时加载 Windows 系统字体(不内嵌,不增加 exe 体积):
+/// - 界面整体以微软雅黑为首选,中英文同一字体,混排字重/基线统一、笔画饱满;
+/// - HEX/数据等宽区以 Consolas 为首选(数字字母严格对齐),中文回退雅黑;
+/// - egui 内置字体保留在回退链末端,兜底罕见字符。
 pub fn setup_fonts(ctx: &egui::Context) {
-    const CANDIDATES: &[&str] = &[
+    const CJK_FONTS: &[&str] = &[
         r"C:\Windows\Fonts\msyh.ttc",
-        r"C:\Windows\Fonts\msyhl.ttc",
         r"C:\Windows\Fonts\simhei.ttf",
         r"C:\Windows\Fonts\simsun.ttc",
-        r"C:\Windows\Fonts\Deng.ttf",
     ];
-    let Some(data) = CANDIDATES.iter().find_map(|p| std::fs::read(p).ok()) else {
-        return;
-    };
+    const MONO_FONTS: &[&str] = &[r"C:\Windows\Fonts\consola.ttf"];
+
     let mut fonts = egui::FontDefinitions::default();
-    fonts
-        .font_data
-        .insert("system_cjk".to_owned(), egui::FontData::from_owned(data));
-    // 追加到默认拉丁字体之后作为字形回退
-    if let Some(f) = fonts.families.get_mut(&FontFamily::Proportional) {
-        f.push("system_cjk".to_owned());
+
+    if let Some(data) = CJK_FONTS.iter().find_map(|p| std::fs::read(p).ok()) {
+        fonts
+            .font_data
+            .insert("ui_cjk".to_owned(), egui::FontData::from_owned(data));
+        if let Some(f) = fonts.families.get_mut(&FontFamily::Proportional) {
+            f.insert(0, "ui_cjk".to_owned());
+        }
+        if let Some(f) = fonts.families.get_mut(&FontFamily::Monospace) {
+            f.push("ui_cjk".to_owned());
+        }
     }
-    if let Some(f) = fonts.families.get_mut(&FontFamily::Monospace) {
-        f.push("system_cjk".to_owned());
+    if let Some(data) = MONO_FONTS.iter().find_map(|p| std::fs::read(p).ok()) {
+        fonts
+            .font_data
+            .insert("ui_mono".to_owned(), egui::FontData::from_owned(data));
+        if let Some(f) = fonts.families.get_mut(&FontFamily::Monospace) {
+            f.insert(0, "ui_mono".to_owned());
+        }
     }
+
     ctx.set_fonts(fonts);
 }
 
@@ -106,9 +117,19 @@ pub fn apply(ctx: &egui::Context) {
     w.open.fg_stroke = Stroke::new(1_f32, TEXT);
     w.open.rounding = Rounding::same(6_f32);
 
+    // 统一字号体系:正文字号略放大,小字号仍清晰;数据等宽区用 Consolas
+    let ts = &mut style.text_styles;
+    ts.insert(TextStyle::Heading, FontId::new(19.0, FontFamily::Proportional));
+    ts.insert(TextStyle::Body, FontId::new(14.0, FontFamily::Proportional));
+    ts.insert(TextStyle::Button, FontId::new(14.0, FontFamily::Proportional));
+    ts.insert(TextStyle::Monospace, FontId::new(13.5, FontFamily::Monospace));
+    ts.insert(TextStyle::Small, FontId::new(12.0, FontFamily::Proportional));
+
     style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-    style.spacing.button_padding = egui::vec2(10.0, 4.0);
+    style.spacing.button_padding = egui::vec2(10.0, 5.0);
     style.spacing.window_margin = egui::Margin::same(10.0);
+    // 控件最小高度与 14px 字体匹配,避免按钮/输入框文字贴边
+    style.spacing.interact_size.y = 26.0;
 
     ctx.set_style(style);
 }
