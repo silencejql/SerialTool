@@ -107,10 +107,42 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
         .show(ui, |ui| {
             ui.set_min_height((total_h - 20.0).max(80.0));
             ui.set_width(ui.available_width());
+
+            // 实时过滤栏
+            let filtering = !app.monitor_filter.trim().is_empty();
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("🔍").color(TEXT_DIM));
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut app.monitor_filter)
+                        .desired_width(240.0)
+                        .hint_text("过滤(COM端口/进程/RX/TX/HEX/文本,空格分隔)"),
+                );
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    app.monitor_filter.clear();
+                }
+                if filtering && ui.small_button("✕").on_hover_text("清除过滤").clicked() {
+                    app.monitor_filter.clear();
+                }
+                if filtering {
+                    let shown = app
+                        .monitor_lines
+                        .iter()
+                        .filter(|l| l.matches_filter(&app.monitor_filter))
+                        .count();
+                    ui.label(
+                        RichText::new(format!("{shown}/{}", app.monitor_lines.len()))
+                            .color(TEXT_DIM)
+                            .small()
+                            .monospace(),
+                    );
+                }
+            });
+            ui.add_space(2.0);
+
             ScrollArea::vertical()
                 .id_salt("mon_data_flow")
                 .auto_shrink([false, false])
-                .stick_to_bottom(app.monitor_auto_scroll)
+                .stick_to_bottom(app.monitor_auto_scroll && !filtering)
                 .show(ui, |ui| {
                     if app.monitor_lines.is_empty() {
                         ui.label(
@@ -118,8 +150,20 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
                                 .color(TEXT_DIM),
                         );
                     }
+                    let mut any = false;
                     for line in &app.monitor_lines {
+                        if !line.matches_filter(&app.monitor_filter) {
+                            continue;
+                        }
+                        any = true;
                         monitor_row(ui, line, app.display_format);
+                    }
+                    if filtering && !any {
+                        ui.label(
+                            RichText::new("无匹配行")
+                                .color(TEXT_DIM)
+                                .italics(),
+                        );
                     }
                 });
         });

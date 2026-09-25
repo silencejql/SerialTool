@@ -58,6 +58,33 @@ impl LogLine {
     fn note(ts: chrono::DateTime<Local>, port: String, process: String, note: String) -> Self {
         Self { ts, dir: Dir::Rx, port, process, bytes: Vec::new(), note }
     }
+
+    /// 是否匹配实时过滤关键词(逗号分隔多个,任一命中;大小写不敏感)
+    /// 匹配范围:端口、进程名、方向(RX/TX)、HEX 数据、可见 ASCII、说明文字
+    pub(crate) fn matches_filter(&self, filter: &str) -> bool {
+        let kws: Vec<&str> = filter
+            .split([',', ' '])
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        if kws.is_empty() {
+            return true;
+        }
+        let dir_s = match self.dir {
+            Dir::Rx => "RX",
+            Dir::Tx => "TX",
+        };
+        let hex = crate::logger::hex_string(&self.bytes);
+        let ascii = crate::logger::visible_ascii(&self.bytes);
+        let hay = format!(
+            "{} {} {} {} {}",
+            self.port, self.process, dir_s, hex, ascii
+        );
+        let hay_l = hay.to_lowercase();
+        let note_l = self.note.to_lowercase();
+        kws.iter()
+            .any(|k| hay_l.contains(&k.to_lowercase()) || note_l.contains(&k.to_lowercase()))
+    }
 }
 
 /// 一个已发起注入的目标进程
@@ -116,6 +143,10 @@ pub struct SerialApp {
     pending_since: HashMap<u32, std::time::Instant>,
     pub monitor_lines: Vec<LogLine>,
     pub monitor_auto_scroll: bool,
+    /// 收发页实时数据过滤关键词
+    pub recv_filter: String,
+    /// 监控页实时数据过滤关键词
+    pub monitor_filter: String,
 
     pub log_cfg: LogConfig,
     pub logger: Logger,
@@ -192,6 +223,8 @@ impl SerialApp {
             pending_since: HashMap::new(),
             monitor_lines: Vec::new(),
             monitor_auto_scroll: true,
+            recv_filter: String::new(),
+            monitor_filter: String::new(),
             log_cfg,
             logger,
             log_query: String::new(),
@@ -636,5 +669,87 @@ impl Drop for SerialApp {
         }
         self.repeat_handles.clear();
         self.save_config();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rx_line(port: &str, proc: &str, bytes: &[u8]) -> LogLine {
+        LogLine::data(
+            chrono::Local::now(),
+            Dir::Rx,
+            port.to_string(),
+            proc.to_string(),
+            bytes.to_vec(),
+        )
+    }
+
+    fn tx_line(port: &str, proc: &str, bytes: &[u8]) -> LogLine {
+        LogLine::data(
+            chrono::Local::now(),
+            Dir::Tx,
+            port.to_string(),
+            proc.to_string(),
+            bytes.to_vec(),
+        )
+    }
+
+    #[test]
+    fn empty_filter_matches_all() {
+        let l = rx_line("COM10", "sscom32.exe", b"Hello");
+        assert!(l.matches_filter(""));
+        assert!(l.matches_filter("   "));
+    }
+
+    #[test]
+    fn filter_by_direction() {
+        let rx = rx_line("COM10", "p.exe", b"Hi");
+        let tx = tx_line("COM10", "p.exe", b"Hi");
+        assert!(rx.matches_filter("RX"));
+        assert!(!rx.matches_filter("TX"));
+        assert!(tx.matches_filter("tx")); // 大小写不敏感
+        assert!(!tx.matches_filter("rx"));
+    }
+
+    #[test]
+    fn filter_by_port_and_process() {
+        let l = rx_line("COM10", "sscom32.exe", b"Hi");
+        assert!(l.matches_filter("COM10"));
+        assert!(l.matches_filter("com10"));
+        assert!(!l.matches_filter("COM11"));
+        assert!(l.matches_filter("sscom"));
+    }
+
+    #[test]
+    fn filter_by_ascii_and_hex() {
+        let l = rx_line("COM1", "p.exe", b"Hello"); // 48 65 6C 6C 6F
+        assert!(l.matches_filter("hello")); // ascii 大小写不敏感
+        assert!(l.matches_filter("HELLO"));
+        assert!(l.matches_filter("48")); // hex
+        assert!(l.matches_filter("48 65")); // hex 前缀
+        assert!(!l.matches_filter("zzzz"));
+    }
+
+    #[test]
+    fn multiple_keywords_any_match() {
+        let l = tx_line("COM11", "p.exe", b"abc");
+        assert!(l.matches_filter("nomatch TX")); // 空格分隔, TX 命中
+        assert!(l.matches_filter("com9,com11")); // 逗号分隔, 任一命中
+        assert!(!l.matches_filter("com9 nomatch"));
+    }
+
+    #[test]
+    fn filter_note_line() {
+        let n = LogLine::note(
+            chrono::Local::now(),
+            "COM5".into(),
+            "p.exe".into(),
+            "agent 已上线".into(),
+        );
+        assert!(n.matches_filter("上线"));
+        assert!(n.matches_filter("AGENT"));
+        assert!(!n.matches_filter("断开"));
     }
 }
