@@ -29,10 +29,11 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
             let filtering = !app.recv_filter.trim().is_empty();
             ui.horizontal(|ui| {
                 ui.label(RichText::new("筛选").color(TEXT_DIM));
+                let field_w = (ui.available_width() - 78.0).max(120.0);
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut app.recv_filter)
-                        .desired_width(220.0)
-                        .hint_text("端口/RX/TX/HEX/文本,空格分隔"),
+                        .desired_width(field_w)
+                        .hint_text("端口/RX/TX/HEX/文本,空格分隔,多个条件任一命中"),
                 );
                 if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     app.recv_filter.clear();
@@ -58,6 +59,8 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
                 .stick_to_bottom(app.auto_scroll && !filtering)
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
+                    // 压缩实时日志行距
+                    ui.spacing_mut().item_spacing.y = 1.0;
                     if app.lines.is_empty() {
                         ui.label(
                             RichText::new("暂无数据 —— 打开串口后开始收发")

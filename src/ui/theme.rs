@@ -117,19 +117,19 @@ pub fn apply(ctx: &egui::Context) {
     w.open.fg_stroke = Stroke::new(1_f32, TEXT);
     w.open.rounding = Rounding::same(6_f32);
 
-    // 统一字号体系:正文字号略放大,小字号仍清晰;数据等宽区用 Consolas
+    // 统一字号体系(参考主流工具软件:正文 13px,紧凑清晰)
     let ts = &mut style.text_styles;
-    ts.insert(TextStyle::Heading, FontId::new(19.0, FontFamily::Proportional));
-    ts.insert(TextStyle::Body, FontId::new(14.0, FontFamily::Proportional));
-    ts.insert(TextStyle::Button, FontId::new(14.0, FontFamily::Proportional));
-    ts.insert(TextStyle::Monospace, FontId::new(13.5, FontFamily::Monospace));
-    ts.insert(TextStyle::Small, FontId::new(12.0, FontFamily::Proportional));
+    ts.insert(TextStyle::Heading, FontId::new(17.0, FontFamily::Proportional));
+    ts.insert(TextStyle::Body, FontId::new(13.0, FontFamily::Proportional));
+    ts.insert(TextStyle::Button, FontId::new(13.0, FontFamily::Proportional));
+    ts.insert(TextStyle::Monospace, FontId::new(12.5, FontFamily::Monospace));
+    ts.insert(TextStyle::Small, FontId::new(11.0, FontFamily::Proportional));
 
-    style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-    style.spacing.button_padding = egui::vec2(10.0, 5.0);
+    style.spacing.item_spacing = egui::vec2(8.0, 5.0);
+    style.spacing.button_padding = egui::vec2(10.0, 4.0);
     style.spacing.window_margin = egui::Margin::same(10.0);
-    // 控件最小高度与 14px 字体匹配,避免按钮/输入框文字贴边
-    style.spacing.interact_size.y = 26.0;
+    // 控件最小高度与 13px 字体匹配,避免按钮/输入框文字贴边
+    style.spacing.interact_size.y = 24.0;
 
     ctx.set_style(style);
 }

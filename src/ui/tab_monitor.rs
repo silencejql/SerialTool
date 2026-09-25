@@ -112,10 +112,11 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
             let filtering = !app.monitor_filter.trim().is_empty();
             ui.horizontal(|ui| {
                 ui.label(RichText::new("筛选").color(TEXT_DIM));
+                let field_w = (ui.available_width() - 78.0).max(120.0);
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut app.monitor_filter)
-                        .desired_width(240.0)
-                        .hint_text("COM端口/进程/RX/TX/HEX/文本,空格分隔"),
+                        .desired_width(field_w)
+                        .hint_text("COM端口/进程/RX/TX/HEX/文本,空格分隔,多个条件任一命中"),
                 );
                 if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     app.monitor_filter.clear();
@@ -144,6 +145,8 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
                 .auto_shrink([false, false])
                 .stick_to_bottom(app.monitor_auto_scroll && !filtering)
                 .show(ui, |ui| {
+                    // 压缩实时日志行距
+                    ui.spacing_mut().item_spacing.y = 1.0;
                     if app.monitor_lines.is_empty() {
                         ui.label(
                             RichText::new("扫描到目标进程后点击「注入」,这里显示其 RX / TX 双向数据")
