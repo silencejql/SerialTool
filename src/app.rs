@@ -196,6 +196,8 @@ pub struct SerialApp {
     pub targets: HashMap<u32, MonTarget>,
     /// pid -> 发起注入的时刻(用于上线超时兜底,Attach 到达后移除)
     pending_since: HashMap<u32, std::time::Instant>,
+    /// 监控目标存活探活节流(每秒一次,发现目标退出自动清理)
+    last_target_check: std::time::Instant,
     pub monitor_lines: Vec<LogLine>,
     pub monitor_auto_scroll: bool,
     /// 收发页实时数据过滤关键词
@@ -294,6 +296,7 @@ impl SerialApp {
             scanning: false,
             targets: HashMap::new(),
             pending_since: HashMap::new(),
+            last_target_check: std::time::Instant::now(),
             monitor_lines: Vec::new(),
             monitor_auto_scroll: true,
             monitor_acc: HashMap::new(),
@@ -434,6 +437,41 @@ impl SerialApp {
                         ),
                     ));
                 }
+            }
+        }
+
+        // 目标进程退出探活:管道对端随目标进程消失,而常驻 PipeServer 收不到
+        // 通道断开(acceptor 常驻持有 Sender)。每秒探活一次,自动冲出聚合数据、
+        // 移出监控列表,避免界面长期挂着已死目标的"在线"状态。
+        if self.last_target_check.elapsed() >= Duration::from_secs(1) {
+            self.last_target_check = std::time::Instant::now();
+            let dead: Vec<u32> = self
+                .targets
+                .keys()
+                .copied()
+                .filter(|pid| !crate::injection::scan::is_process_alive(*pid))
+                .collect();
+            for pid in dead {
+                let name = self.target_name(pid);
+                let keys: Vec<(u32, String, injection::Dir)> = self
+                    .monitor_acc
+                    .keys()
+                    .filter(|k| k.0 == pid)
+                    .cloned()
+                    .collect();
+                for k in keys {
+                    self.flush_monitor_key(&k);
+                }
+                crate::injection::agent_pipe::PipeServer::detach(pid);
+                crate::injection::agent_pipe::PipeServer::disallow(pid);
+                self.pending_since.remove(&pid);
+                self.targets.remove(&pid);
+                self.push_monitor_line(LogLine::note(
+                    Local::now(),
+                    String::new(),
+                    name,
+                    format!("目标进程 pid {pid} 已退出,自动停止监控"),
+                ));
             }
         }
     }

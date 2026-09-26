@@ -172,7 +172,15 @@ fn run_cli_inject(pid: u32, duration_ms: u64) {
                     }
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // acceptor 线程常驻持有通道 Sender(为后续连接 clone),目标进程
+                // 被杀时即便 reader 断开,本端也收不到 Disconnected。主动探活:
+                // 目标已退出则立即结束监听,避免空等满整个时长。
+                if !injection::scan::is_process_alive(pid) {
+                    println!("[cli] 目标进程已退出,结束监听");
+                    break;
+                }
+            }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }

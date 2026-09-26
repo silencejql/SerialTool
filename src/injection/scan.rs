@@ -27,7 +27,7 @@ use windows::Win32::Storage::FileSystem::{
 use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows::Win32::System::SystemInformation::IMAGE_FILE_MACHINE_UNKNOWN;
 use windows::Win32::System::Threading::{
-    GetCurrentProcess, IsWow64Process2, OpenProcess, QueryFullProcessImageNameW,
+    GetCurrentProcess, GetExitCodeProcess, IsWow64Process2, OpenProcess, QueryFullProcessImageNameW,
     PROCESS_DUP_HANDLE, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 
@@ -217,6 +217,21 @@ fn process_file_name(pid: u32) -> Option<String> {
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or(path),
         )
+    }
+}
+
+/// 目标进程是否仍在运行:pid 打不开(已不存在)或退出码非 STILL_ACTIVE 均视为已退出。
+/// 用于管道对端随目标进程消失、但本端常驻 PipeServer 收不到通道断开的场景。
+pub fn is_process_alive(pid: u32) -> bool {
+    const STILL_ACTIVE: u32 = 259;
+    unsafe {
+        let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return false;
+        };
+        let mut code = 0u32;
+        let ok = GetExitCodeProcess(h, &mut code).is_ok();
+        let _ = CloseHandle(h);
+        ok && code == STILL_ACTIVE
     }
 }
 
