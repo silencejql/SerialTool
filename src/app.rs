@@ -128,6 +128,12 @@ pub struct SerialApp {
     pub send_input: String,
     pub send_format: DataFormat,
     pub append_crlf: bool,
+    /// 发送区定时发送开关
+    pub send_timed: bool,
+    /// 发送区定时间隔输入缓冲(毫秒)
+    pub send_interval_input: String,
+    /// 发送区定时下次触发时刻(None=未排期)
+    pub send_next_at: Option<std::time::Instant>,
 
     pub presets: Vec<SendPreset>,
     pub editor_open: bool,
@@ -227,6 +233,9 @@ impl SerialApp {
             send_input: String::new(),
             send_format: DataFormat::Ascii,
             append_crlf: true,
+            send_timed: false,
+            send_interval_input: "1000".into(),
+            send_next_at: None,
             presets,
             editor_open: false,
             editing: SendPreset::new(next_preset_id),
@@ -493,6 +502,51 @@ impl SerialApp {
         }
     }
 
+    /// 发送区定时发送:到点则以当前输入框内容发送一次并排下一次
+    /// 返回是否需要立即重绘(发生了发送)
+    pub fn tick_send_timed(&mut self) -> bool {
+        if !self.send_timed || self.serial_handle.is_none() {
+            self.send_next_at = None;
+            return false;
+        }
+        let ms: u64 = match self.send_interval_input.trim().parse::<u64>() {
+            Ok(v) if v >= 20 => v, // 下限 20ms,防止空转
+            _ => {
+                self.send_next_at = None;
+                return false;
+            }
+        };
+        let now = std::time::Instant::now();
+        match self.send_next_at {
+            None => {
+                self.send_next_at = Some(now + Duration::from_millis(ms));
+                false
+            }
+            Some(at) if now >= at => {
+                self.send_next_at = Some(now + Duration::from_millis(ms));
+                // 构造一次性预设复用解码与追加 CRLF 逻辑
+                let tmp = crate::serial::preset::SendPreset {
+                    id: 0,
+                    name: String::new(),
+                    content: self.send_input.clone(),
+                    format: self.send_format,
+                    append_crlf: self.append_crlf,
+                    repeat_interval_ms: None,
+                    enabled: false,
+                    expanded: false,
+                };
+                match tmp.decode() {
+                    Ok(data) if !data.is_empty() => {
+                        let _ = self.send_bytes(&data);
+                    }
+                    _ => {} // 空内容/格式错误:跳过本次,不刷屏报错
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn send_bytes(&mut self, data: &[u8]) -> Result<(), String> {
         let handle = self.serial_handle.as_mut().ok_or("串口未打开")?;
         handle.send(data)?;
@@ -669,6 +723,7 @@ fn to_log_dir(d: injection::Dir) -> Dir {
 impl eframe::App for SerialApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_events();
+        self.tick_send_timed();
         crate::ui::build_ui(self, ctx);
         // 定时重发线程触发后需要持续重绘
         ctx.request_repaint_after(Duration::from_millis(100));

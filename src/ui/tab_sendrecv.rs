@@ -192,6 +192,16 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
                 ui.selectable_value(&mut app.send_format, DataFormat::Hex, "HEX");
                 ui.separator();
                 ui.checkbox(&mut app.append_crlf, "追加 CRLF");
+                ui.separator();
+                ui.checkbox(&mut app.send_timed, "定时发送");
+                if app.send_timed {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut app.send_interval_input)
+                            .desired_width(48.0)
+                            .vertical_align(egui::Align::Center),
+                    );
+                    ui.label("ms");
+                }
                 // 有界的 RTL 区域承载发送/清空按钮:宽度占满剩余空间,按钮右对齐
                 let connected = app.serial_handle.is_some();
                 let row_w = ui.available_width();
