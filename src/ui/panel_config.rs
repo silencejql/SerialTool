@@ -167,13 +167,17 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
                                     FrameMode::Idle,
                                     "空闲间隔",
                                 )
-                                .on_hover_text("总线空闲约 10ms 即一帧:自动合并被拆分的消息(默认)");
+                                .on_hover_text(
+                                    "总线空闲约 10ms 即一帧:自动合并被拆分的消息,监控页同样生效(默认)",
+                                );
                                 ui.selectable_value(
                                     &mut app.serial_cfg.frame_mode,
                                     FrameMode::Newline,
                                     "换行符 LF",
                                 )
-                                .on_hover_text("按 \\n 切分成帧(兼容 \\r\\n),适合 AT/文本行协议");
+                                .on_hover_text(
+                                    "按 \\n 切分成帧(兼容 \\r\\n),监控页也按换行切分,适合 AT/文本行协议",
+                                );
                             });
                         ui.end_row();
                     });

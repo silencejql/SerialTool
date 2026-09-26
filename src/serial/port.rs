@@ -284,7 +284,7 @@ fn flow_of(s: &str) -> FlowControl {
 
 /// 从接收聚合缓冲中切出所有以 `\n` 结尾的完整帧(兼容 `\r\n`,分隔符保留在帧尾)。
 /// 切出的帧按字节先后顺序返回;尚未遇到换行的半行仍留在 `acc` 中等待后续字节。
-fn drain_newline_frames(acc: &mut Vec<u8>) -> Vec<Vec<u8>> {
+pub(crate) fn drain_newline_frames(acc: &mut Vec<u8>) -> Vec<Vec<u8>> {
     let mut frames = Vec::new();
     while let Some(rel) = acc.iter().position(|&b| b == b'\n') {
         // split_off 后 acc=本行(含 \n),返回值为剩余尾部

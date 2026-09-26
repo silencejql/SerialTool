@@ -12,7 +12,9 @@ use chrono::Local;
 use crate::config::{self, AppConfig};
 pub use crate::logger::Dir;
 use crate::logger::{ExportEntry, LogConfig, Logger};
-use crate::serial::port::{list_ports, open, RxEvent, SerialConfig, SerialHandle};
+use crate::serial::port::{
+    drain_newline_frames, list_ports, open, FrameMode, RxEvent, SerialConfig, SerialHandle,
+};
 use crate::serial::preset::{DataFormat, SendPreset};
 use crate::injection::scan::SerialProcess;
 use crate::injection::{self, frame_to_event, InjectionEvent};
@@ -26,6 +28,8 @@ const INJECT_ONLINE_TIMEOUT: Duration = Duration::from_secs(8);
 /// 监控帧空闲成帧间隔:目标进程的一条消息可能被驱动拆成多次 read/write,
 /// agent 按次回传;与接收页"空闲间隔"成帧一致,间隔内的相邻同向帧合并为一帧
 const MONITOR_GAP_MS: u64 = 10;
+/// 监控换行模式下,无换行残余的空闲出帧阈值(与接收页 NEWLINE_PARTIAL_MS 一致)
+const MONITOR_NEWLINE_PARTIAL_MS: u64 = 100;
 /// 监控帧聚合缓冲上限(持续数据流时防无限积压)
 const MONITOR_MAX_ACC: usize = 64 * 1024;
 
@@ -100,23 +104,40 @@ pub struct MonTarget {
     pub online: bool,
 }
 
-/// 监控帧聚合缓冲:(pid, 端口, 方向) 维度暂存空闲间隔内的相邻帧
+/// 监控帧聚合缓冲:(pid, 端口, 方向) 维度按当前成帧模式暂存相邻帧
 pub struct MonitorAcc {
+    /// 建立缓冲时的成帧模式(模式切换后旧缓冲按旧阈值出帧)
+    mode: FrameMode,
     data: Vec<u8>,
     first_ts: chrono::DateTime<Local>,
     last: std::time::Instant,
 }
 
 impl MonitorAcc {
-    /// 吸收一帧:与上次到达间隔小于 MONITOR_GAP_MS 则并入并返回 true,
+    /// 吸收一帧:与上次到达间隔小于该模式的断帧阈值则并入并返回 true,
     /// 否则返回 false(调用方应先出帧再新建缓冲)
     fn absorb(&mut self, data: &[u8], now: std::time::Instant) -> bool {
-        if now.duration_since(self.last) >= Duration::from_millis(MONITOR_GAP_MS) {
+        if now.duration_since(self.last) >= Duration::from_millis(self.gap_ms()) {
             return false;
         }
         self.data.extend_from_slice(data);
         self.last = now;
         true
+    }
+
+    /// 该模式相邻帧并入的断帧间隔阈值
+    /// (空闲 10ms;换行模式残余在 100ms 空闲内持续累积,与接收页一致)
+    fn gap_ms(&self) -> u64 {
+        match self.mode {
+            FrameMode::Idle => MONITOR_GAP_MS,
+            FrameMode::Newline => MONITOR_NEWLINE_PARTIAL_MS,
+        }
+    }
+
+    /// 换行模式:切出缓冲内所有以 `\n` 结尾的完整行(分隔符保留行尾,
+    /// 与接收页 drain_newline_frames 语义一致),无换行残余留在缓冲
+    fn drain_lines(&mut self) -> Vec<Vec<u8>> {
+        drain_newline_frames(&mut self.data)
     }
 }
 
@@ -181,7 +202,7 @@ pub struct SerialApp {
     pub recv_filter: String,
     /// 监控页实时数据过滤关键词
     pub monitor_filter: String,
-    /// 监控帧聚合缓冲(空闲间隔成帧,见 monitor_accumulate)
+    /// 监控帧聚合缓冲(按"接收组帧"模式成帧,见 monitor_accumulate)
     pub monitor_acc: HashMap<(u32, String, injection::Dir), MonitorAcc>,
 
     pub log_cfg: LogConfig,
@@ -366,11 +387,12 @@ impl SerialApp {
             }
         }
 
-        // 空闲超过成帧间隔的监控聚合缓冲统一出帧
+        // 空闲超过该缓冲所属模式出帧阈值的监控聚合缓冲统一出帧
+        // (空闲模式 10ms;换行模式无换行残余 100ms 兜底,均与接收页一致)
         let due: Vec<(u32, String, injection::Dir)> = self
             .monitor_acc
             .iter()
-            .filter(|(_, a)| a.last.elapsed() >= Duration::from_millis(MONITOR_GAP_MS))
+            .filter(|(_, a)| a.last.elapsed() >= Duration::from_millis(a.gap_ms()))
             .map(|(k, _)| k.clone())
             .collect();
         for k in due {
@@ -426,9 +448,9 @@ impl SerialApp {
         format!("pid {pid}")
     }
 
-    /// 监控帧聚合:间隔小于 MONITOR_GAP_MS 的相邻同向帧合并为一帧。
-    /// 目标进程的一条消息可能被驱动拆成多次 read/write,agent 按次回传,
-    /// 与接收页"空闲间隔"成帧语义一致,避免监控页把一条消息显示成多条。
+    /// 监控帧聚合:间隔小于断帧阈值的相邻同向帧合并,超阈值(或切换模式)则
+    /// 先出帧再另起新缓冲。空闲模式按 10ms 空闲成帧;换行模式持续累积并立即
+    /// 切出所有以 `\n` 结尾的完整行,无换行残余等 100ms 空闲兜底,均与接收页一致。
     fn monitor_accumulate(
         &mut self,
         pid: u32,
@@ -439,13 +461,15 @@ impl SerialApp {
     ) {
         let key = (pid, port, dir);
         let now = std::time::Instant::now();
+        let mode = self.serial_cfg.frame_mode;
         enum Act {
             Merge,
             Full,
             New,
         }
         let act = match self.monitor_acc.get_mut(&key) {
-            Some(acc) => {
+            // 模式切换后旧缓冲按旧模式出帧,新数据另起新缓冲
+            Some(acc) if acc.mode == mode => {
                 if acc.absorb(&data, now) {
                     if acc.data.len() >= MONITOR_MAX_ACC {
                         Act::Full
@@ -456,23 +480,65 @@ impl SerialApp {
                     Act::New
                 }
             }
-            None => Act::New,
+            _ => Act::New,
         };
         match act {
-            Act::Merge => {}
+            Act::Merge => {
+                if mode == FrameMode::Newline {
+                    // 完整行立即出帧,残余留在缓冲
+                    self.drain_monitor_lines(&key);
+                }
+            }
             Act::Full => self.flush_monitor_key(&key),
             Act::New => {
-                // 与上一帧间隔已超阈值:先推出缓冲的旧帧,再起新帧
+                // 与上一帧间隔已超阈值(或模式已切换):先推出旧缓冲,再起新帧
                 self.flush_monitor_key(&key);
                 self.monitor_acc
-                    .insert(key, MonitorAcc { data, first_ts: ts, last: now });
+                    .insert(key.clone(), MonitorAcc { mode, data, first_ts: ts, last: now });
+                if mode == FrameMode::Newline {
+                    self.drain_monitor_lines(&key);
+                }
             }
         }
     }
 
-    /// 把一个聚合键缓冲的数据出帧(无缓冲则忽略)
+    /// 换行模式:把该键缓冲内所有完整行立即出帧(`\n` 保留行尾),残余留在缓冲
+    fn drain_monitor_lines(&mut self, key: &(u32, String, injection::Dir)) {
+        let (first_ts, frames, empty) = match self.monitor_acc.get_mut(key) {
+            Some(acc) => {
+                let frames = acc.drain_lines();
+                let empty = acc.data.is_empty();
+                (acc.first_ts, frames, empty)
+            }
+            None => return,
+        };
+        if empty {
+            // 切行后无残余:移除空缓冲,下一帧另起新缓冲以刷新起始时间戳
+            self.monitor_acc.remove(key);
+        }
+        if frames.is_empty() {
+            return;
+        }
+        let name = self.target_name(key.0);
+        let dir = to_log_dir(key.2);
+        for frame in frames {
+            self.logger.log(&key.1, &name, dir, &frame);
+            self.push_monitor_line(LogLine::data(
+                first_ts,
+                dir,
+                key.1.clone(),
+                name.clone(),
+                frame,
+            ));
+        }
+    }
+
+    /// 把一个聚合键缓冲的数据出帧(无缓冲或缓冲已空——如换行切行后仅剩残余——则忽略)
     fn flush_monitor_key(&mut self, key: &(u32, String, injection::Dir)) {
         if let Some(acc) = self.monitor_acc.remove(key) {
+            if acc.data.is_empty() {
+                return;
+            }
             let name = self.target_name(key.0);
             let dir = to_log_dir(key.2);
             self.logger.log(&key.1, &name, dir, &acc.data);
@@ -872,6 +938,7 @@ mod tests {
     fn monitor_acc_merges_burst_and_splits_on_idle() {
         // 一条消息被拆成多次 read:间隔小于 MONITOR_GAP_MS 的帧并入同一缓冲
         let mut acc = MonitorAcc {
+            mode: FrameMode::Idle,
             data: Vec::new(),
             first_ts: chrono::Local::now(),
             last: std::time::Instant::now(),
@@ -883,6 +950,45 @@ mod tests {
         // 空闲超过成帧间隔后不再并入,调用方应出帧另起新缓冲
         std::thread::sleep(Duration::from_millis(MONITOR_GAP_MS + 10));
         assert!(!acc.absorb(b"X", std::time::Instant::now()));
+    }
+
+    #[test]
+    fn monitor_newline_drains_complete_lines_keeps_partial() {
+        // 换行模式:碎片到达持续累积,遇 \n 切出完整行(分隔符保留行尾)
+        let mut acc = MonitorAcc {
+            mode: FrameMode::Newline,
+            data: Vec::new(),
+            first_ts: chrono::Local::now(),
+            last: std::time::Instant::now(),
+        };
+        assert!(acc.absorb(b"AT+CS", std::time::Instant::now()));
+        assert!(acc.drain_lines().is_empty());
+        assert!(acc.absorb(b"Q=1\r\nOK\r\n", std::time::Instant::now()));
+        assert_eq!(
+            acc.drain_lines(),
+            vec![b"AT+CSQ=1\r\n".to_vec(), b"OK\r\n".to_vec()]
+        );
+        assert!(acc.data.is_empty());
+
+        // 只有 \r 不算换行,残余等待后续字节
+        assert!(acc.absorb(b"abc\r", std::time::Instant::now()));
+        assert!(acc.drain_lines().is_empty());
+        assert_eq!(acc.data, b"abc\r");
+    }
+
+    #[test]
+    fn monitor_newline_partial_survives_idle_gap() {
+        // 换行模式残余不像空闲模式那样 10ms 出帧,100ms 空闲内仍并入同一缓冲
+        let mut acc = MonitorAcc {
+            mode: FrameMode::Newline,
+            data: Vec::new(),
+            first_ts: chrono::Local::now(),
+            last: std::time::Instant::now(),
+        };
+        assert!(acc.absorb(b"abc\r", std::time::Instant::now()));
+        std::thread::sleep(Duration::from_millis(MONITOR_GAP_MS + 10));
+        assert!(acc.absorb(b"def\n", std::time::Instant::now()));
+        assert_eq!(acc.drain_lines(), vec![b"abc\rdef\n".to_vec()]);
     }
 
     fn tx_line(port: &str, proc: &str, bytes: &[u8]) -> LogLine {
