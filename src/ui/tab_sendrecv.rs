@@ -154,6 +154,7 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
         if ui.button("清空显示").clicked() {
             app.lines.clear();
             app.monitor_lines.clear();
+            app.monitor_acc.clear();
         }
         if ui.button("保存日志").clicked() {
             app.export_current_log();

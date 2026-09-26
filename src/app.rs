@@ -23,6 +23,12 @@ const MAX_LINES: usize = 50_000;
 /// 发起注入后等待 agent 上线的超时;超时则恢复按钮并提示
 const INJECT_ONLINE_TIMEOUT: Duration = Duration::from_secs(8);
 
+/// 监控帧空闲成帧间隔:目标进程的一条消息可能被驱动拆成多次 read/write,
+/// agent 按次回传;与接收页"空闲间隔"成帧一致,间隔内的相邻同向帧合并为一帧
+const MONITOR_GAP_MS: u64 = 10;
+/// 监控帧聚合缓冲上限(持续数据流时防无限积压)
+const MONITOR_MAX_ACC: usize = 64 * 1024;
+
 /// 本机收发数据在日志中的进程标记
 const SELF_PROC: &str = "SerialTool";
 
@@ -94,6 +100,26 @@ pub struct MonTarget {
     pub online: bool,
 }
 
+/// 监控帧聚合缓冲:(pid, 端口, 方向) 维度暂存空闲间隔内的相邻帧
+pub struct MonitorAcc {
+    data: Vec<u8>,
+    first_ts: chrono::DateTime<Local>,
+    last: std::time::Instant,
+}
+
+impl MonitorAcc {
+    /// 吸收一帧:与上次到达间隔小于 MONITOR_GAP_MS 则并入并返回 true,
+    /// 否则返回 false(调用方应先出帧再新建缓冲)
+    fn absorb(&mut self, data: &[u8], now: std::time::Instant) -> bool {
+        if now.duration_since(self.last) >= Duration::from_millis(MONITOR_GAP_MS) {
+            return false;
+        }
+        self.data.extend_from_slice(data);
+        self.last = now;
+        true
+    }
+}
+
 struct RepeatHandle {
     stop: Arc<AtomicBool>,
     join: Option<thread::JoinHandle<()>>,
@@ -155,6 +181,8 @@ pub struct SerialApp {
     pub recv_filter: String,
     /// 监控页实时数据过滤关键词
     pub monitor_filter: String,
+    /// 监控帧聚合缓冲(空闲间隔成帧,见 monitor_accumulate)
+    pub monitor_acc: HashMap<(u32, String, injection::Dir), MonitorAcc>,
 
     pub log_cfg: LogConfig,
     pub logger: Logger,
@@ -247,6 +275,7 @@ impl SerialApp {
             pending_since: HashMap::new(),
             monitor_lines: Vec::new(),
             monitor_auto_scroll: true,
+            monitor_acc: HashMap::new(),
             recv_filter: String::new(),
             monitor_filter: String::new(),
             log_cfg,
@@ -332,18 +361,20 @@ impl SerialApp {
                     ));
                 }
                 InjectionEvent::Data { pid, port, dir, data, ts } => {
-                    let name = self.target_name(pid);
-                    let dir = to_log_dir(dir);
-                    self.logger.log(&port, &name, dir, &data);
-                    self.push_monitor_line(LogLine::data(
-                        ts,
-                        dir,
-                        port,
-                        name,
-                        data,
-                    ));
+                    self.monitor_accumulate(pid, port, dir, data, ts);
                 }
             }
+        }
+
+        // 空闲超过成帧间隔的监控聚合缓冲统一出帧
+        let due: Vec<(u32, String, injection::Dir)> = self
+            .monitor_acc
+            .iter()
+            .filter(|(_, a)| a.last.elapsed() >= Duration::from_millis(MONITOR_GAP_MS))
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in due {
+            self.flush_monitor_key(&k);
         }
 
         while let Ok(id) = self.repeat_rx.try_recv() {
@@ -395,6 +426,66 @@ impl SerialApp {
         format!("pid {pid}")
     }
 
+    /// 监控帧聚合:间隔小于 MONITOR_GAP_MS 的相邻同向帧合并为一帧。
+    /// 目标进程的一条消息可能被驱动拆成多次 read/write,agent 按次回传,
+    /// 与接收页"空闲间隔"成帧语义一致,避免监控页把一条消息显示成多条。
+    fn monitor_accumulate(
+        &mut self,
+        pid: u32,
+        port: String,
+        dir: injection::Dir,
+        data: Vec<u8>,
+        ts: chrono::DateTime<Local>,
+    ) {
+        let key = (pid, port, dir);
+        let now = std::time::Instant::now();
+        enum Act {
+            Merge,
+            Full,
+            New,
+        }
+        let act = match self.monitor_acc.get_mut(&key) {
+            Some(acc) => {
+                if acc.absorb(&data, now) {
+                    if acc.data.len() >= MONITOR_MAX_ACC {
+                        Act::Full
+                    } else {
+                        Act::Merge
+                    }
+                } else {
+                    Act::New
+                }
+            }
+            None => Act::New,
+        };
+        match act {
+            Act::Merge => {}
+            Act::Full => self.flush_monitor_key(&key),
+            Act::New => {
+                // 与上一帧间隔已超阈值:先推出缓冲的旧帧,再起新帧
+                self.flush_monitor_key(&key);
+                self.monitor_acc
+                    .insert(key, MonitorAcc { data, first_ts: ts, last: now });
+            }
+        }
+    }
+
+    /// 把一个聚合键缓冲的数据出帧(无缓冲则忽略)
+    fn flush_monitor_key(&mut self, key: &(u32, String, injection::Dir)) {
+        if let Some(acc) = self.monitor_acc.remove(key) {
+            let name = self.target_name(key.0);
+            let dir = to_log_dir(key.2);
+            self.logger.log(&key.1, &name, dir, &acc.data);
+            self.push_monitor_line(LogLine::data(
+                acc.first_ts,
+                dir,
+                key.1.clone(),
+                name,
+                acc.data,
+            ));
+        }
+    }
+
     /// 后台扫描持有串口句柄的进程
     pub fn start_scan(&mut self) {
         if self.scanning {
@@ -442,6 +533,16 @@ impl SerialApp {
 
     /// 请求某 pid 的 agent 停用 hook 并移出监控
     pub fn detach_pid(&mut self, pid: u32) {
+        // 该 pid 未成帧的聚合数据先出帧(需在 targets 移除前取名)
+        let keys: Vec<(u32, String, injection::Dir)> = self
+            .monitor_acc
+            .keys()
+            .filter(|k| k.0 == pid)
+            .cloned()
+            .collect();
+        for k in keys {
+            self.flush_monitor_key(&k);
+        }
         crate::injection::agent_pipe::PipeServer::detach(pid);
         crate::injection::agent_pipe::PipeServer::disallow(pid);
         self.pending_since.remove(&pid);
@@ -765,6 +866,23 @@ mod tests {
             proc.to_string(),
             bytes.to_vec(),
         )
+    }
+
+    #[test]
+    fn monitor_acc_merges_burst_and_splits_on_idle() {
+        // 一条消息被拆成多次 read:间隔小于 MONITOR_GAP_MS 的帧并入同一缓冲
+        let mut acc = MonitorAcc {
+            data: Vec::new(),
+            first_ts: chrono::Local::now(),
+            last: std::time::Instant::now(),
+        };
+        assert!(acc.absorb(b"P", std::time::Instant::now()));
+        assert!(acc.absorb(b"ING 1\r\n", std::time::Instant::now()));
+        assert_eq!(acc.data, b"PING 1\r\n");
+
+        // 空闲超过成帧间隔后不再并入,调用方应出帧另起新缓冲
+        std::thread::sleep(Duration::from_millis(MONITOR_GAP_MS + 10));
+        assert!(!acc.absorb(b"X", std::time::Instant::now()));
     }
 
     fn tx_line(port: &str, proc: &str, bytes: &[u8]) -> LogLine {

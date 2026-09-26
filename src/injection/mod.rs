@@ -9,7 +9,7 @@ use chrono::Local;
 
 use frame::{Frame, FT_ATTACH, FT_INFO, FT_RX, FT_TX};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Dir {
     Rx,
     Tx,

@@ -21,7 +21,7 @@ use retour::GenericDetour;
 use windows::core::{w, PCSTR, PCWSTR};
 use windows::Win32::Foundation::{
     BOOL, CloseHandle, HANDLE, HMODULE, SetLastError, GetLastError, ERROR_IO_PENDING,
-    INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0,
 };
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, QueryDosDeviceW, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OVERLAPPED,
@@ -39,9 +39,9 @@ use windows::Win32::System::LibraryLoader::{
 };
 use windows::Win32::System::Threading::{
     CreateEventW, CreateThread, GetCurrentProcess, GetCurrentProcessId, GetCurrentThreadId,
-    OpenThread, ResetEvent, ResumeThread, Sleep, SuspendThread, WaitForSingleObject,
-    LPTHREAD_START_ROUTINE, THREAD_CREATION_FLAGS, THREAD_GET_CONTEXT, THREAD_SET_CONTEXT,
-    THREAD_SUSPEND_RESUME,
+    OpenThread, ResetEvent, ResumeThread, SetEvent, Sleep, SuspendThread, WaitForMultipleObjects,
+    WaitForSingleObject, LPTHREAD_START_ROUTINE, THREAD_CREATION_FLAGS, THREAD_GET_CONTEXT,
+    THREAD_SET_CONTEXT, THREAD_SUSPEND_RESUME,
 };
 
 const PIPE_NAME: &str = r"\\.\pipe\serialtool_mon";
@@ -71,6 +71,10 @@ static PENDING: Lazy<Mutex<HashMap<usize, (usize, SendPtr)>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 /// 待发送帧队列
 static QUEUE: Lazy<Mutex<VecDeque<Vec<u8>>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
+/// worker 会话的数据通知事件句柄(0 = 无会话)。
+/// hook 捕获到数据时立即唤醒 pump 冲刷队列;否则帧会滞留最长 100ms,
+/// 监控端将失去按空闲间隔成帧所需的真实到达时序。
+static PUMP_EVENT: AtomicIsize = AtomicIsize::new(0);
 
 // =====================================================================
 // 帧编解码
@@ -95,9 +99,21 @@ fn build_frame(t: u8, port: &str, data: &[u8]) -> Vec<u8> {
 
 fn push_frame(t: u8, port: &str, data: &[u8]) {
     let f = build_frame(t, port, data);
+    let mut wake = false;
     if let Ok(mut q) = QUEUE.lock() {
         if q.len() < 4096 {
             q.push_back(f);
+            wake = true;
+        }
+    }
+    if wake {
+        // 唤醒 pump 立即冲刷。会话刚结束时句柄可能已失效:SetEvent 对无效/
+        // 复用句柄静默失败,无副作用。
+        let ev = PUMP_EVENT.load(Ordering::Acquire);
+        if ev != 0 {
+            unsafe {
+                let _ = SetEvent(HANDLE(ev as *mut c_void));
+            }
         }
     }
 }
@@ -875,6 +891,20 @@ extern "system" fn worker(_: *mut c_void) -> u32 {
                 continue;
             }
         };
+        // 数据通知事件:hook 捕获到数据时立即唤醒 pump 冲刷队列,
+        // 保证帧以真实捕获时刻到达监控端(空闲成帧依赖该时序)
+        let ev_data = match unsafe { CreateEventW(None, BOOL(1), BOOL(0), PCWSTR::null()) } {
+            Ok(h) => h,
+            Err(_) => {
+                unsafe {
+                    let _ = windows::Win32::Foundation::CloseHandle(ev);
+                    let _ = windows::Win32::Foundation::CloseHandle(pipe);
+                }
+                unsafe { Sleep(500) };
+                continue;
+            }
+        };
+        PUMP_EVENT.store(ev_data.0 as isize, Ordering::Release);
 
         if !ensure_hooks() {
             push_frame(FT_INFO, "", "hook 安装失败".as_bytes());
@@ -883,7 +913,9 @@ extern "system" fn worker(_: *mut c_void) -> u32 {
         unsafe { adopt_existing_handles() };
         // 先报上线,监控端据此把状态切到"监控中"
         if !pipe_write_all(pipe, &build_frame(FT_ATTACH, "", b"")) {
+            PUMP_EVENT.store(0, Ordering::Release);
             unsafe {
+                let _ = windows::Win32::Foundation::CloseHandle(ev_data);
                 let _ = windows::Win32::Foundation::CloseHandle(ev);
                 let _ = windows::Win32::Foundation::CloseHandle(pipe);
             }
@@ -933,39 +965,45 @@ extern "system" fn worker(_: *mut c_void) -> u32 {
                 read_pending = true;
             }
 
-            match unsafe { WaitForSingleObject(ev, 100) } {
-                WAIT_TIMEOUT => continue, // 同一读请求继续挂起
-                WAIT_OBJECT_0 => {
-                    read_pending = false;
-                    if unsafe { GetOverlappedResult(pipe, &cmd_ov, &mut cmd_got, true) }.is_err() {
-                        break 'pump;
-                    }
-                    if cmd_got == 0 {
-                        break 'pump; // 对端关闭(EOF/broken)
-                    }
-                    // 帧形如 A5 5A cmd,扫描 detach
-                    let mut is_detach = false;
-                    let mut i = 0;
-                    while i + 2 < cmd_got as usize {
-                        if cmd_buf[i] == 0xA5 && cmd_buf[i + 1] == 0x5A {
-                            if cmd_buf[i + 2] == CMD_DETACH {
-                                is_detach = true;
-                            }
-                            i += 3;
-                        } else {
-                            i += 1;
+            // 等命令到达、数据通知或 100ms 兜底;数据通知仅用于回到循环顶
+            // 立即冲刷队列,不触碰挂起的命令读
+            let wait_handles = [ev, ev_data];
+            let w = unsafe { WaitForMultipleObjects(&wait_handles, false, 100) };
+            if w.0 == WAIT_OBJECT_0.0 {
+                read_pending = false;
+                if unsafe { GetOverlappedResult(pipe, &cmd_ov, &mut cmd_got, true) }.is_err() {
+                    break 'pump;
+                }
+                if cmd_got == 0 {
+                    break 'pump; // 对端关闭(EOF/broken)
+                }
+                // 帧形如 A5 5A cmd,扫描 detach
+                let mut is_detach = false;
+                let mut i = 0;
+                while i + 2 < cmd_got as usize {
+                    if cmd_buf[i] == 0xA5 && cmd_buf[i + 1] == 0x5A {
+                        if cmd_buf[i + 2] == CMD_DETACH {
+                            is_detach = true;
                         }
-                    }
-                    if is_detach {
-                        detach = true;
-                        break 'pump;
+                        i += 3;
+                    } else {
+                        i += 1;
                     }
                 }
-                _ => break 'pump,
+                if is_detach {
+                    detach = true;
+                    break 'pump;
+                }
+            } else if w.0 == WAIT_FAILED.0 {
+                break 'pump;
             }
+            // 数据通知(WAIT_OBJECT_0+1)或超时:回到循环顶冲刷队列
         }
 
+        // 先撤通知事件再关句柄,避免 hook 线程撞上已关闭的句柄值
+        PUMP_EVENT.store(0, Ordering::Release);
         unsafe {
+            let _ = windows::Win32::Foundation::CloseHandle(ev_data);
             let _ = windows::Win32::Foundation::CloseHandle(ev);
             let _ = windows::Win32::Foundation::CloseHandle(pipe);
         }
