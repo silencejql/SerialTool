@@ -192,7 +192,7 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
                 ui.selectable_value(&mut app.send_format, DataFormat::Hex, "HEX");
                 ui.separator();
                 ui.checkbox(&mut app.append_crlf, "追加 CRLF");
-                // 有界的 RTL 区域承载发送按钮:宽度占满剩余空间,按钮在其中右对齐
+                // 有界的 RTL 区域承载发送/清空按钮:宽度占满剩余空间,按钮右对齐
                 let connected = app.serial_handle.is_some();
                 let row_w = ui.available_width();
                 ui.allocate_ui_with_layout(
@@ -208,6 +208,13 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
                         );
                         if resp.clicked() {
                             do_send(app);
+                        }
+                        if ui
+                            .button("清空")
+                            .on_hover_text("清空输入框")
+                            .clicked()
+                        {
+                            app.send_input.clear();
                         }
                     },
                 );
