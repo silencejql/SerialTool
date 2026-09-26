@@ -109,11 +109,13 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
                     }
                 });
 
-            // ---- 悬浮工具条:覆盖在数据区底部,右缩 14px 避开滚动条 ----
+            // ---- 悬浮工具条:覆盖在数据区右下,右缩 14px 避开滚动条 ----
+            const BAR_W: f32 = 332.0;
             let outer = ui.min_rect();
+            let bar_w = BAR_W.min(outer.width() - 30.0).max(120.0);
             let bar_rect = egui::Rect::from_min_size(
-                egui::pos2(outer.left() + 8.0, outer.bottom() - BAR_H - 6.0),
-                egui::vec2((outer.width() - 16.0 - 14.0).max(120.0), BAR_H),
+                egui::pos2(outer.right() - 14.0 - bar_w, outer.bottom() - BAR_H - 6.0),
+                egui::vec2(bar_w, BAR_H),
             );
             let mut bar_ui = ui.new_child(
                 egui::UiBuilder::new()
