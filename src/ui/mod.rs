@@ -156,33 +156,10 @@ pub fn build_ui(app: &mut SerialApp, ctx: &egui::Context) {
             ui.horizontal_centered(|ui| {
                 ui.label(RichText::new(format!("RX: {}", human_bytes(app.rx_bytes))).color(RX_C));
                 ui.label(RichText::new(format!("TX: {}", human_bytes(app.tx_bytes))).color(TX_C));
-                ui.separator();
-                ui.label(RichText::new("显示:").color(TEXT_DIM));
-                if ui
-                    .selectable_label(app.display_format == DataFormat::Hex, "HEX")
-                    .clicked()
-                {
-                    app.display_format = DataFormat::Hex;
-                }
-                if ui
-                    .selectable_label(app.display_format == DataFormat::Ascii, "文本")
-                    .clicked()
-                {
-                    app.display_format = DataFormat::Ascii;
-                }
-                ui.checkbox(&mut app.auto_scroll, "自动滚动");
-                // 右侧: 状态文本靠最右,其左侧依次是保存日志、清空显示
+                // 显示格式/自动滚动/清空/保存日志已悬浮在收发页日志窗口底部
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let color = if app.status_err { ERR_C } else { TEXT_DIM };
                     ui.label(RichText::new(&app.status).color(color));
-                    ui.separator();
-                    if ui.button("保存日志").clicked() {
-                        app.export_current_log();
-                    }
-                    if ui.button("清空显示").clicked() {
-                        app.lines.clear();
-                        app.monitor_lines.clear();
-                    }
                 });
             });
         });

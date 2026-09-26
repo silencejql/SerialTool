@@ -62,10 +62,14 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
             });
             ui.add_space(2.0);
 
+            // 悬浮工具条高度/底部留白:让最后一行可以滚到视口第一行,不被悬浮条遮挡
+            const BAR_H: f32 = 28.0;
+            const ROW_H: f32 = 16.0;
+            let pad_bottom = (scroll_h - ROW_H).max(BAR_H + 8.0);
+
             ScrollArea::vertical()
                 .max_height(scroll_h)
                 .auto_shrink([false, false])
-                .stick_to_bottom(app.auto_scroll && !filtering)
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     // 压缩实时日志行距
@@ -90,6 +94,61 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
                                 .color(TEXT_DIM)
                                 .italics(),
                         );
+                    }
+                    // 末行位置:贴底吸附时让它停在悬浮条上方而不是被遮住
+                    let last_line = ui.min_rect().bottom() - if any { ROW_H } else { 0.0 };
+                    ui.add_space(pad_bottom);
+                    if app.auto_scroll && !filtering && any {
+                        ui.scroll_to_rect(
+                            egui::Rect::from_min_max(
+                                egui::pos2(ui.min_rect().left(), last_line),
+                                egui::pos2(ui.min_rect().right(), last_line + ROW_H + BAR_H + 6.0),
+                            ),
+                            Some(egui::Align::BOTTOM),
+                        );
+                    }
+                });
+
+            // ---- 悬浮工具条:覆盖在数据区底部,右缩 14px 避开滚动条 ----
+            let outer = ui.min_rect();
+            let bar_rect = egui::Rect::from_min_size(
+                egui::pos2(outer.left() + 8.0, outer.bottom() - BAR_H - 6.0),
+                egui::vec2((outer.width() - 16.0 - 14.0).max(120.0), BAR_H),
+            );
+            let mut bar_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(bar_rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            egui::Frame::none()
+                .fill(egui::Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0xE8))
+                .stroke(egui::Stroke::new(1_f32, BORDER))
+                .rounding(14_f32)
+                .inner_margin(egui::Margin::symmetric(10.0, 0.0))
+                .show(&mut bar_ui, |ui| {
+                    ui.set_height(BAR_H - 2.0);
+                    ui.label(RichText::new("显示:").color(TEXT_DIM));
+                    if ui
+                        .selectable_label(app.display_format == DataFormat::Hex, "HEX")
+                        .clicked()
+                    {
+                        app.display_format = DataFormat::Hex;
+                    }
+                    if ui
+                        .selectable_label(app.display_format == DataFormat::Ascii, "文本")
+                        .clicked()
+                    {
+                        app.display_format = DataFormat::Ascii;
+                    }
+                    ui.separator();
+                    ui.checkbox(&mut app.auto_scroll, "自动滚动");
+                    ui.separator();
+                    if ui.button("清空显示").clicked() {
+                        app.lines.clear();
+                        app.monitor_lines.clear();
+                    }
+                    if ui.button("保存日志").clicked() {
+                        app.export_current_log();
                     }
                 });
         });
