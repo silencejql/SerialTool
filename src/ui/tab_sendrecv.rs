@@ -133,37 +133,32 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
             .max_rect(bar_rect)
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
-    egui::Frame::none()
-        .fill(egui::Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0xE8))
-        .stroke(egui::Stroke::new(1_f32, BORDER))
-        .rounding(14_f32)
-        .inner_margin(egui::Margin::symmetric(10.0, 0.0))
-        .show(&mut bar_ui, |ui| {
-            ui.set_height(28.0 - 2.0);
-            ui.label(RichText::new("显示:").color(TEXT_DIM));
-            if ui
-                .selectable_label(app.display_format == DataFormat::Hex, "HEX")
-                .clicked()
-            {
-                app.display_format = DataFormat::Hex;
-            }
-            if ui
-                .selectable_label(app.display_format == DataFormat::Ascii, "文本")
-                .clicked()
-            {
-                app.display_format = DataFormat::Ascii;
-            }
-            ui.separator();
-            ui.checkbox(&mut app.auto_scroll, "自动滚动");
-            ui.separator();
-            if ui.button("清空显示").clicked() {
-                app.lines.clear();
-                app.monitor_lines.clear();
-            }
-            if ui.button("保存日志").clicked() {
-                app.export_current_log();
-            }
-        });
+    // 无背景无边框,控件直接悬浮在数据区上(透明)
+    bar_ui.horizontal(|ui| {
+        ui.label(RichText::new("显示:").color(TEXT_DIM));
+        if ui
+            .selectable_label(app.display_format == DataFormat::Hex, "HEX")
+            .clicked()
+        {
+            app.display_format = DataFormat::Hex;
+        }
+        if ui
+            .selectable_label(app.display_format == DataFormat::Ascii, "文本")
+            .clicked()
+        {
+            app.display_format = DataFormat::Ascii;
+        }
+        ui.separator();
+        ui.checkbox(&mut app.auto_scroll, "自动滚动");
+        ui.separator();
+        if ui.button("清空显示").clicked() {
+            app.lines.clear();
+            app.monitor_lines.clear();
+        }
+        if ui.button("保存日志").clicked() {
+            app.export_current_log();
+        }
+    });
 
     ui.add_space(6.0);
 
