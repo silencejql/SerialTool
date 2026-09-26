@@ -132,8 +132,11 @@ fn run_cli_inject(pid: u32, duration_ms: u64) {
     // 给 acceptor 一点时间挂出管道实例
     std::thread::sleep(Duration::from_millis(100));
 
+    // 白名单门控:与 GUI 注入路径一致,先放行该 pid 再注入
+    injection::agent_pipe::PipeServer::allow(pid);
     println!("[cli] 注入 pid {pid} ...");
     if let Err(e) = injection::inject::inject(pid) {
+        injection::agent_pipe::PipeServer::disallow(pid);
         eprintln!("[cli] 注入失败: {e}");
         std::process::exit(2);
     }
@@ -174,6 +177,8 @@ fn run_cli_inject(pid: u32, duration_ms: u64) {
         }
     }
     injection::agent_pipe::PipeServer::detach(pid);
+    // 停止监控:收回白名单,驻留 worker 的自动重连将被拒绝
+    injection::agent_pipe::PipeServer::disallow(pid);
     println!("[cli] done");
 }
 

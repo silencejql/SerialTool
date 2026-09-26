@@ -301,6 +301,10 @@ impl SerialApp {
 
         // 注入 agent 回传事件
         while let Ok(f) = self.inj_rx.try_recv() {
+            // 双保险:忽略本进程内 agent 的帧(双开自连场景已在管道层拒绝)
+            if f.pid == unsafe { windows::Win32::System::Threading::GetCurrentProcessId() } {
+                continue;
+            }
             match frame_to_event(f) {
                 InjectionEvent::Attach { pid } => {
                     self.pending_since.remove(&pid);
@@ -364,6 +368,7 @@ impl SerialApp {
                 if !t.online {
                     let name = t.name.clone();
                     self.targets.remove(&pid);
+                    crate::injection::agent_pipe::PipeServer::disallow(pid);
                     self.set_error(format!("注入 {name} (pid {pid}) 后 agent 未上线"));
                     self.push_monitor_line(LogLine::note(
                         Local::now(),
@@ -405,6 +410,8 @@ impl SerialApp {
 
     /// 注入指定 pid
     pub fn inject_pid(&mut self, pid: u32, name: String) {
+        // 先开白名单再注入,保证 agent 的 ATTACH 一定被接受
+        crate::injection::agent_pipe::PipeServer::allow(pid);
         match injection::inject::inject(pid) {
             Ok(()) => {
                 self.set_status(format!("已向 {name} (pid {pid}) 注入,等待 agent 上线…"));
@@ -420,6 +427,8 @@ impl SerialApp {
                 ));
             }
             Err(e) => {
+                // 注入没成功,收回白名单,避免迟到的驻留 agent 被自动接回
+                crate::injection::agent_pipe::PipeServer::disallow(pid);
                 self.set_error(format!("注入失败: {e}"));
                 self.push_monitor_line(LogLine::note(
                     Local::now(),
@@ -431,9 +440,10 @@ impl SerialApp {
         }
     }
 
-    /// 请求某 pid 的 agent 卸载 hook
+    /// 请求某 pid 的 agent 停用 hook 并移出监控
     pub fn detach_pid(&mut self, pid: u32) {
         crate::injection::agent_pipe::PipeServer::detach(pid);
+        crate::injection::agent_pipe::PipeServer::disallow(pid);
         self.pending_since.remove(&pid);
         if let Some(t) = self.targets.remove(&pid) {
             self.push_monitor_line(LogLine::note(

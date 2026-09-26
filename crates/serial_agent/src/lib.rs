@@ -27,13 +27,21 @@ use windows::Win32::Storage::FileSystem::{
     CreateFileW, QueryDosDeviceW, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OVERLAPPED,
     FILE_SHARE_MODE, OPEN_EXISTING,
 };
+use windows::Win32::System::Diagnostics::Debug::{
+    FlushInstructionCache, GetThreadContext, SetThreadContext, CONTEXT_FLAGS, CONTEXT,
+};
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+};
 use windows::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
 use windows::Win32::System::LibraryLoader::{
-    FreeLibraryAndExitThread, GetModuleFileNameW, GetModuleHandleW, GetProcAddress,
+    GetModuleFileNameW, GetModuleHandleW, GetProcAddress,
 };
 use windows::Win32::System::Threading::{
-    CreateEventW, CreateThread, GetCurrentProcessId, ResetEvent, Sleep, WaitForSingleObject,
-    LPTHREAD_START_ROUTINE, THREAD_CREATION_FLAGS,
+    CreateEventW, CreateThread, GetCurrentProcess, GetCurrentProcessId, GetCurrentThreadId,
+    OpenThread, ResetEvent, ResumeThread, Sleep, SuspendThread, WaitForSingleObject,
+    LPTHREAD_START_ROUTINE, THREAD_CREATION_FLAGS, THREAD_GET_CONTEXT, THREAD_SET_CONTEXT,
+    THREAD_SUSPEND_RESUME,
 };
 
 const PIPE_NAME: &str = r"\\.\pipe\serialtool_mon";
@@ -647,19 +655,6 @@ fn install_hooks() -> bool {
     }
 }
 
-/// 幂等安装 hook(重连时不重复 enable,retour 对已启用 detour 再 enable 会报错)
-fn ensure_hooks() -> bool {
-    if HOOKS_INSTALLED.load(Ordering::Acquire) {
-        return true;
-    }
-    if install_hooks() {
-        HOOKS_INSTALLED.store(true, Ordering::Release);
-        true
-    } else {
-        false
-    }
-}
-
 unsafe fn disable_hooks() {
     let _ = HOOK_CREATE_W.disable();
     let _ = HOOK_CREATE_A.disable();
@@ -667,6 +662,141 @@ unsafe fn disable_hooks() {
     let _ = HOOK_WRITE.disable();
     let _ = HOOK_OVERLAPPED.disable();
     let _ = HOOK_CLOSE.disable();
+}
+
+// =====================================================================
+// 安全切换 inline hook:挂起其他线程 + RIP 修正
+// =====================================================================
+//
+// retour 用一条 5 字节 jmp 覆盖函数开头(或 target-5 起 7 字节 hot-patch),
+// enable/disable 是对这几字节的非原子 memcpy。若此刻别的线程指令指针正落在
+// 被改写的区域内,恢复到一半的字节会被当成指令执行 → 进程崩溃。被注入的串口
+// 程序有线程在紧密循环 ReadFile,竞态窗口很大。
+//
+// 做法(与 Detours 一致):挂起本进程所有其他线程 → 逐个读指令指针,落在任一
+// hook 补丁区的就重定向到函数入口(参数/栈帧未动,等价于该函数整体重入一次)
+// → 执行字节补丁 → FlushInstructionCache → 恢复线程。
+
+/// 被 hook 的 6 个 kernel32 函数入口地址
+fn hook_targets() -> [usize; 6] {
+    [
+        proc_addr(b"CreateFileW\0") as usize,
+        proc_addr(b"CreateFileA\0") as usize,
+        proc_addr(b"ReadFile\0") as usize,
+        proc_addr(b"WriteFile\0") as usize,
+        proc_addr(b"GetOverlappedResult\0") as usize,
+        proc_addr(b"CloseHandle\0") as usize,
+    ]
+}
+
+/// 指令指针是否落在某 hook 补丁区(target-5..target+5,同时覆盖 hot-patch 形态)
+/// 返回需要重定向到的安全地址(函数入口)
+fn patch_zone_entry(ip: usize, targets: &[usize; 6]) -> Option<usize> {
+    targets
+        .iter()
+        .copied()
+        .find(|&t| t != 0 && ip >= t.saturating_sub(5) && ip < t + 5)
+}
+
+// CONTEXT 控制段标志:CONTEXT_ARCH(0x00100000/0x00010000) | CONTEXT_CONTROL(0x1)
+#[cfg(target_arch = "x86_64")]
+const CONTEXT_CONTROL_FLAGS: u32 = 0x0010_0001;
+#[cfg(target_arch = "x86")]
+const CONTEXT_CONTROL_FLAGS: u32 = 0x0001_0001;
+
+#[cfg(target_arch = "x86_64")]
+unsafe fn ctx_ip(ctx: &CONTEXT) -> usize {
+    ctx.Rip as usize
+}
+#[cfg(target_arch = "x86_64")]
+unsafe fn set_ctx_ip(ctx: &mut CONTEXT, ip: usize) {
+    ctx.Rip = ip as u64;
+}
+#[cfg(target_arch = "x86")]
+unsafe fn ctx_ip(ctx: &CONTEXT) -> usize {
+    ctx.Eip as usize
+}
+#[cfg(target_arch = "x86")]
+unsafe fn set_ctx_ip(ctx: &mut CONTEXT, ip: usize) {
+    ctx.Eip = ip as u32;
+}
+
+/// 挂起除当前线程外的全部线程,修正危险指令指针后执行 patch,再统一恢复
+unsafe fn with_threads_frozen<T>(patch: impl FnOnce() -> T) -> T {
+    let self_tid = GetCurrentThreadId();
+    let pid = GetCurrentProcessId();
+    let targets = hook_targets();
+    let mut frozen: Vec<HANDLE> = Vec::new();
+
+    if let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) {
+        let mut te: THREADENTRY32 = std::mem::zeroed();
+        te.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+        if Thread32First(snap, &mut te).is_ok() {
+            loop {
+                if te.th32OwnerProcessID == pid && te.th32ThreadID != self_tid {
+                    let access =
+                        THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT;
+                    if let Ok(h) = OpenThread(access, false, te.th32ThreadID) {
+                        // 返回 u32::MAX 表示失败
+                        if SuspendThread(h) != u32::MAX {
+                            let mut ctx: CONTEXT = std::mem::zeroed();
+                            ctx.ContextFlags = CONTEXT_FLAGS(CONTEXT_CONTROL_FLAGS);
+                            if GetThreadContext(h, &mut ctx).is_ok() {
+                                if let Some(entry) = patch_zone_entry(ctx_ip(&ctx), &targets) {
+                                    set_ctx_ip(&mut ctx, entry);
+                                    let _ = SetThreadContext(h, &ctx);
+                                }
+                            }
+                            frozen.push(h);
+                        } else {
+                            let _ = CloseHandle(h);
+                        }
+                    }
+                }
+                if Thread32Next(snap, &mut te).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snap);
+    }
+
+    // 所有其他线程已停在安全位置,此刻补丁是串行的
+    let result = patch();
+
+    let proc = GetCurrentProcess();
+    for &t in targets.iter() {
+        if t != 0 {
+            // 覆盖入口前 5(hot-patch)与入口 5 字节,共刷 8 字节
+            let _ = FlushInstructionCache(proc, Some((t - 5) as *const c_void), 8);
+        }
+    }
+    for h in frozen {
+        let _ = ResumeThread(h);
+        let _ = CloseHandle(h);
+    }
+    result
+}
+
+/// 幂等安装 hook(所有其他线程冻结下打补丁)。重连时不重复 enable。
+fn ensure_hooks() -> bool {
+    if HOOKS_INSTALLED.load(Ordering::Acquire) {
+        return true;
+    }
+    let ok = unsafe { with_threads_frozen(install_hooks) };
+    if ok {
+        HOOKS_INSTALLED.store(true, Ordering::Release);
+    }
+    ok
+}
+
+/// 停用 hook(冻结其他线程下安全还原字节)。detach 后允许后续重新安装。
+fn shutdown_hooks() {
+    if !HOOKS_INSTALLED.load(Ordering::Acquire) {
+        return;
+    }
+    unsafe { with_threads_frozen(|| disable_hooks()) };
+    HOOKS_INSTALLED.store(false, Ordering::Release);
 }
 
 /// 向(overlapped)管道句柄写完整个缓冲
@@ -723,10 +853,12 @@ extern "system" fn worker(_: *mut c_void) -> u32 {
     // 等 DllMain 离开 loader lock
     unsafe { Sleep(100) };
 
-    // 会话循环:监控端异常退出时不卸载 hook、不退出线程,保持采集并等待其重启重连;
-    // 只有显式收到 detach 才跳出并自释放。这样重复"注入"也能让驻留 worker 重新上线。
+    // 会话循环:
+    // - 监控端异常退出:不卸载 hook、不退出线程,保持采集并等待其重启重连;
+    // - 收到 detach:安全还原 hook,但 DLL 不自卸载(无法保证没有线程正在 DLL 代码内,
+    //   FreeLibrary 必留竞态),worker 回到等待态;再次"注入"时重新装 hook 上线。
     let mut detach = false;
-    while !detach {
+    loop {
         let pipe = match connect_pipe() {
             Some(h) => h,
             None => break,
@@ -755,6 +887,8 @@ extern "system" fn worker(_: *mut c_void) -> u32 {
                 let _ = windows::Win32::Foundation::CloseHandle(ev);
                 let _ = windows::Win32::Foundation::CloseHandle(pipe);
             }
+            // 退避后重连(可能是监控端尚未允许/自连被拒)
+            unsafe { Sleep(500) };
             continue;
         }
 
@@ -835,16 +969,16 @@ extern "system" fn worker(_: *mut c_void) -> u32 {
             let _ = windows::Win32::Foundation::CloseHandle(ev);
             let _ = windows::Win32::Foundation::CloseHandle(pipe);
         }
-        // Broken -> 保留 hook 与队列,回到 connect_pipe 等待新监控端;Detach -> 跳出收尾
-    }
-
-    // 仅在收到 detach 后到达:卸载 hook 并从目标进程自释放
-    unsafe { disable_hooks() };
-    let hmod = HMODULE_SELF.load(Ordering::Relaxed);
-    if hmod != 0 {
-        unsafe {
-            FreeLibraryAndExitThread(HMODULE(hmod as *mut c_void), 0);
+        if detach {
+            // 用户显式停止监控:冻结其他线程安全还原 hook;DLL 驻留休眠,
+            // worker 继续回到 connect_pipe 等待,下次注入时再装 hook 上线。
+            shutdown_hooks();
+            detach = false;
         }
+        // Broken -> 保留 hook 与队列,回到 connect_pipe 等待新监控端;
+        // Detach -> hook 已还原,同样等待下一次监控会话。
+        // 统一退避 500ms:兼容被监控端白名单/自连拒绝的场景,避免忙重连。
+        unsafe { Sleep(500) };
     }
     0
 }

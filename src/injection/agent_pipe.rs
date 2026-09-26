@@ -3,7 +3,7 @@
 //! `start` 启动一个常驻 acceptor 线程:循环创建管道实例并 `ConnectNamedPipe`,
 //! 每个连接派一个 reader 线程。帧通过 mpsc 通道送上层。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::sync::mpsc::Sender;
 
@@ -22,7 +22,7 @@ use windows::Win32::System::Pipes::{
     PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
 use windows::Win32::System::Threading::{
-    CreateEventW, ResetEvent, WaitForSingleObject,
+    CreateEventW, GetCurrentProcessId, ResetEvent, WaitForSingleObject,
 };
 
 use super::frame::{command, Frame, FrameParser, CMD_DETACH};
@@ -35,6 +35,10 @@ unsafe impl Sync for SendHandle {}
 /// pid -> 该进程 agent 的管道句柄(用于下发 detach)
 static CONNS: Lazy<Mutex<HashMap<u32, SendHandle>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+/// 用户已主动点"注入"、允许上报的 pid 白名单。
+/// detach 后驻留 agent 会周期性重连,不在名单内的 ATTACH 一律拒绝,
+/// 避免"取消监控"后又被自动接回。
+static ALLOWED: Lazy<Mutex<HashSet<u32>>> = Lazy::new(|| Mutex::new(HashSet::new()));
 static STARTED: OnceLock<()> = OnceLock::new();
 
 pub struct PipeServer;
@@ -47,7 +51,21 @@ impl PipeServer {
         }
     }
 
-    /// 请求某 pid 的 agent 卸载 hook 并自释放;无连接时忽略
+    /// 将 pid 加入允许名单(用户点注入时调用,须早于 agent 的 ATTACH)
+    pub fn allow(pid: u32) {
+        if let Ok(mut a) = ALLOWED.lock() {
+            a.insert(pid);
+        }
+    }
+
+    /// 将 pid 移出允许名单(取消监控)
+    pub fn disallow(pid: u32) {
+        if let Ok(mut a) = ALLOWED.lock() {
+            a.remove(&pid);
+        }
+    }
+
+    /// 请求某 pid 的 agent 停用 hook(驻留休眠);无连接时忽略
     pub fn detach(pid: u32) {
         let sh = if let Ok(mut c) = CONNS.lock() {
             c.remove(&pid)
@@ -199,8 +217,19 @@ fn reader_loop(sh: SendHandle, tx: Sender<Frame>) {
         if got == 0 {
             break;
         }
+        let mut reject_self = false;
         for frame in parser.push(&buf[..got as usize]) {
             if frame.ftype == super::frame::FT_ATTACH {
+                // 目标本身也是本软件(双开 serial_tool)时,目标内的 agent 可能连到它
+                // 自己进程挂出的同名管道实例;或该 pid 已被用户取消监控(驻留 agent
+                // 的周期重连)。两种情况都拒绝并断开,不注册连接、不上报:
+                // 自连时断开促使其轮转到真正的注入方实例(FIFO);非白名单时让其休眠退避。
+                let self_pid = unsafe { GetCurrentProcessId() };
+                let allowed = ALLOWED.lock().map(|a| a.contains(&frame.pid)).unwrap_or(false);
+                if frame.pid == self_pid || !allowed {
+                    reject_self = true;
+                    break;
+                }
                 registered = Some(frame.pid);
                 // 同一句柄上本线程 overlapped 读与 detach 线程 overlapped 写可并发
                 if let Ok(mut c) = CONNS.lock() {
@@ -210,6 +239,9 @@ fn reader_loop(sh: SendHandle, tx: Sender<Frame>) {
             if tx.send(frame).is_err() {
                 break;
             }
+        }
+        if reject_self {
+            break;
         }
     }
     if let Some(pid) = registered {
