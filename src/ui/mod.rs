@@ -171,16 +171,18 @@ pub fn build_ui(app: &mut SerialApp, ctx: &egui::Context) {
                     app.display_format = DataFormat::Ascii;
                 }
                 ui.checkbox(&mut app.auto_scroll, "自动滚动");
-                if ui.button("清空显示").clicked() {
-                    app.lines.clear();
-                    app.monitor_lines.clear();
-                }
-                if ui.button("保存日志").clicked() {
-                    app.export_current_log();
-                }
+                // 右侧: 状态文本靠最右,其左侧依次是保存日志、清空显示
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let color = if app.status_err { ERR_C } else { TEXT_DIM };
                     ui.label(RichText::new(&app.status).color(color));
+                    ui.separator();
+                    if ui.button("保存日志").clicked() {
+                        app.export_current_log();
+                    }
+                    if ui.button("清空显示").clicked() {
+                        app.lines.clear();
+                        app.monitor_lines.clear();
+                    }
                 });
             });
         });

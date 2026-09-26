@@ -104,6 +104,23 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
         .inner_margin(egui::Margin::same(8_f32))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
+            // 提示行在上,输入框居中,格式行+发送按钮在下
+            ui.label(
+                RichText::new("Ctrl + Enter 发送 · 左侧预设支持一键发送与定时重发")
+                    .color(TEXT_DIM)
+                    .small(),
+            );
+            ui.add_space(2.0);
+            let ctrl_enter = ui.ctx().input(|i| {
+                i.key_pressed(egui::Key::Enter) && i.modifiers.ctrl && app.tab == crate::app::Tab::SendRecv
+            });
+            ui.add(
+                egui::TextEdit::multiline(&mut app.send_input)
+                    .desired_rows(3)
+                    .desired_width(ui.available_width())
+                    .code_editor(),
+            );
+            ui.add_space(2.0);
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut app.send_format, DataFormat::Ascii, "ASCII");
                 ui.selectable_value(&mut app.send_format, DataFormat::Hex, "HEX");
@@ -129,21 +146,6 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
                     },
                 );
             });
-            ui.add_space(2.0);
-            let ctrl_enter = ui.ctx().input(|i| {
-                i.key_pressed(egui::Key::Enter) && i.modifiers.ctrl && app.tab == crate::app::Tab::SendRecv
-            });
-            ui.add(
-                egui::TextEdit::multiline(&mut app.send_input)
-                    .desired_rows(3)
-                    .desired_width(ui.available_width())
-                    .code_editor(),
-            );
-            ui.label(
-                RichText::new("Ctrl + Enter 发送 · 左侧预设支持一键发送与定时重发")
-                    .color(TEXT_DIM)
-                    .small(),
-            );
             if ctrl_enter {
                 do_send(app);
             }
