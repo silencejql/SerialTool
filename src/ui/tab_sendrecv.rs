@@ -17,12 +17,13 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
     let scroll_h = (total_h - SEND_H - GAP - FRAME_PAD - FILTER_H).max(80.0);
 
     // ---- 数据显示区 ----
-    egui::Frame::none()
+    let frame_rect = egui::Frame::none()
         .fill(BG)
         .stroke(egui::Stroke::new(1_f32, BORDER))
         .rounding(8_f32)
         .inner_margin(egui::Margin::same(8_f32))
         .show(ui, |ui| {
+            // 内容见下;悬浮条需用 show() 返回的实际 frame 矩形定位
             ui.set_width(ui.available_width());
 
             // 实时过滤栏:胶囊搜索框填满左侧,右侧固定摆放清除按钮与计数
@@ -109,50 +110,59 @@ pub fn ui(app: &mut SerialApp, ui: &mut egui::Ui) {
                     }
                 });
 
-            // ---- 悬浮工具条:覆盖在数据区右下,右缩 14px 避开滚动条 ----
-            const BAR_W: f32 = 332.0;
-            let outer = ui.min_rect();
-            let bar_w = BAR_W.min(outer.width() - 30.0).max(120.0);
-            let bar_rect = egui::Rect::from_min_size(
-                egui::pos2(outer.right() - 14.0 - bar_w, outer.bottom() - BAR_H - 6.0),
-                egui::vec2(bar_w, BAR_H),
-            );
-            let mut bar_ui = ui.new_child(
-                egui::UiBuilder::new()
-                    .max_rect(bar_rect)
-                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
-            );
-            egui::Frame::none()
-                .fill(egui::Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0xE8))
-                .stroke(egui::Stroke::new(1_f32, BORDER))
-                .rounding(14_f32)
-                .inner_margin(egui::Margin::symmetric(10.0, 0.0))
-                .show(&mut bar_ui, |ui| {
-                    ui.set_height(BAR_H - 2.0);
-                    ui.label(RichText::new("显示:").color(TEXT_DIM));
-                    if ui
-                        .selectable_label(app.display_format == DataFormat::Hex, "HEX")
-                        .clicked()
-                    {
-                        app.display_format = DataFormat::Hex;
-                    }
-                    if ui
-                        .selectable_label(app.display_format == DataFormat::Ascii, "文本")
-                        .clicked()
-                    {
-                        app.display_format = DataFormat::Ascii;
-                    }
-                    ui.separator();
-                    ui.checkbox(&mut app.auto_scroll, "自动滚动");
-                    ui.separator();
-                    if ui.button("清空显示").clicked() {
-                        app.lines.clear();
-                        app.monitor_lines.clear();
-                    }
-                    if ui.button("保存日志").clicked() {
-                        app.export_current_log();
-                    }
-                });
+            // 悬浮条在 show() 返回后基于 frame 实际矩形绘制
+        })
+        .response
+        .rect;
+
+    // ---- 悬浮工具条:数据区右下,右缩 14px 避开滚动条 ----
+    // frame_rect 是数据框的实际绘制矩形,以其为基准不会超出主界面
+    // 宽度需容纳: 显示:+HEX+文本+自动滚动+清空显示+保存日志,过窄会向右溢出
+    const BAR_W: f32 = 420.0;
+    const BAR_H: f32 = 28.0;
+    let bar_w = BAR_W.min(frame_rect.width() - 30.0).max(120.0);
+    let bar_rect = egui::Rect::from_min_size(
+        egui::pos2(
+            frame_rect.right() - 14.0 - bar_w,
+            frame_rect.bottom() - BAR_H - 6.0,
+        ),
+        egui::vec2(bar_w, BAR_H),
+    );
+    let mut bar_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(bar_rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    egui::Frame::none()
+        .fill(egui::Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0xE8))
+        .stroke(egui::Stroke::new(1_f32, BORDER))
+        .rounding(14_f32)
+        .inner_margin(egui::Margin::symmetric(10.0, 0.0))
+        .show(&mut bar_ui, |ui| {
+            ui.set_height(28.0 - 2.0);
+            ui.label(RichText::new("显示:").color(TEXT_DIM));
+            if ui
+                .selectable_label(app.display_format == DataFormat::Hex, "HEX")
+                .clicked()
+            {
+                app.display_format = DataFormat::Hex;
+            }
+            if ui
+                .selectable_label(app.display_format == DataFormat::Ascii, "文本")
+                .clicked()
+            {
+                app.display_format = DataFormat::Ascii;
+            }
+            ui.separator();
+            ui.checkbox(&mut app.auto_scroll, "自动滚动");
+            ui.separator();
+            if ui.button("清空显示").clicked() {
+                app.lines.clear();
+                app.monitor_lines.clear();
+            }
+            if ui.button("保存日志").clicked() {
+                app.export_current_log();
+            }
         });
 
     ui.add_space(6.0);
